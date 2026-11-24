@@ -1,0 +1,26 @@
+# Rust / Cargo build outputs
+/target/
+apps/desktop/src-tauri/target/
+
+# Node / Vite / Tauri frontend build outputs
+node_modules/
+apps/desktop/node_modules/
+apps/desktop/dist/
+
+# Compiled benchmark binaries
+benchmarks/real_world/bin/*.elf
+benchmarks/real_world/bin/*.so
+
+# IDA Pro temporary databases and error logs
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.err
+
+# OS / Editor files
+.DS_Store
+Thumbs.db

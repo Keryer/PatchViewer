@@ -1,0 +1,17 @@
+[package]
+name = "patch-viewer-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "patch-viewer"
+path = "src/main.rs"
+
+[dependencies]
+patch-viewer-core = { path = "../patch-viewer-core" }
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true

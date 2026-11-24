@@ -1,0 +1,10 @@
+[package]
+name = "patch-viewer-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+similar.workspace = true
+regex.workspace = true
+once_cell.workspace = true

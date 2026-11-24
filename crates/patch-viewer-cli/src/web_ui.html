@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IDA Patch Viewer — 反编译伪代码 Diff 查看器</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-2: #1c222b;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --green-bg: rgba(46, 160, 67, 0.16);
+      --red: #f85149;
+      --red-bg: rgba(248, 81, 73, 0.16);
+      --yellow: #d29922;
+      --yellow-bg: rgba(210, 153, 34, 0.16);
+      --purple: #bc8cff;
+      --purple-bg: rgba(188, 140, 255, 0.14);
+      --cyan: #39c5cf;
+      --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 15px;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, #238636, #1f6feb);
+      color: #fff;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      letter-spacing: 0.4px;
+    }
+    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button, select {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 11px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    button:hover, select:hover { border-color: var(--accent); }
+    button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; font-weight: 600; }
+    button.primary:hover { background: #388bfd; }
+    .toolbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .toggles { display: flex; gap: 6px; flex-wrap: wrap; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .pill.active {
+      border-color: rgba(88, 166, 255, 0.55);
+      background: rgba(88, 166, 255, 0.13);
+      color: var(--text);
+    }
+    .pill .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--muted);
+    }
+    .pill.active .dot { background: var(--green); }
+    .stats {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .stat-chip {
+      padding: 3px 9px;
+      border-radius: 6px;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .stat-add { color: var(--green); background: var(--green-bg); border-color: rgba(63,185,80,0.3); }
+    .stat-del { color: var(--red); background: var(--red-bg); border-color: rgba(248,81,73,0.3); }
+    .stat-mod { color: var(--yellow); background: var(--yellow-bg); border-color: rgba(210,153,34,0.3); }
+    .stat-noise { color: var(--muted); background: var(--surface-2); border-color: var(--border); }
+    .stat-cfg { color: var(--purple); background: var(--purple-bg); border-color: rgba(188,140,255,0.35); }
+
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+    .diff-container {
+      flex: 1;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .diff-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 6px 10px;
+      text-align: left;
+      font-size: 11px;
+      color: var(--muted);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .col-ln { width: 46px; }
+    .col-tag { width: 195px; }
+    .diff-row td {
+      padding: 1px 8px;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.25);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ln {
+      color: var(--muted);
+      text-align: right;
+      user-select: none;
+      opacity: 0.7;
+      border-right: 1px solid var(--border);
+    }
+    .divider { border-right: 2px solid var(--border); }
+    .row-Unchanged td.code { color: #b1bac4; }
+    .row-NoiseOnly td.code { color: #6e7681; background: rgba(110, 118, 129, 0.04); }
+    .row-Added td.code-new { background: var(--green-bg); }
+    .row-Added td.code-old { background: rgba(255,255,255,0.015); }
+    .row-Removed td.code-old { background: var(--red-bg); }
+    .row-Removed td.code-new { background: rgba(255,255,255,0.015); }
+    .row-Modified td.code-old { background: rgba(248, 81, 73, 0.09); }
+    .row-Modified td.code-new { background: rgba(46, 160, 67, 0.09); }
+    .row-active { outline: 2px solid var(--yellow); outline-offset: -2px; }
+
+    .tok-NoiseChange {
+      border-bottom: 1px dashed #6e7681;
+      color: #8b949e;
+      border-radius: 2px;
+    }
+    .tok-SemanticAdd { background: rgba(63, 185, 80, 0.32); color: #aff5b4; border-radius: 3px; padding: 0 1px; }
+    .tok-SemanticDelete { background: rgba(248, 81, 73, 0.32); color: #ffdcd7; border-radius: 3px; padding: 0 1px; }
+    .tok-SemanticModify { background: rgba(210, 153, 34, 0.34); color: #ffe58f; border-radius: 3px; padding: 0 1px; }
+    .tok-mapped { cursor: help; }
+    .tok-mapped:hover { background: rgba(57, 197, 207, 0.25); color: #fff; }
+
+    .cfg-badge {
+      display: inline-block;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .cfg-BranchInverted { color: var(--purple); background: var(--purple-bg); }
+    .cfg-GuardFlattened { color: var(--cyan); background: rgba(57, 197, 207, 0.14); }
+    .cfg-LabelMoved { color: #79c0ff; background: rgba(88, 166, 255, 0.14); }
+    .cfg-CaseReordered { color: #ff7b72; background: rgba(255, 123, 114, 0.13); }
+    .cfg-DeclarationBlock { color: var(--muted); background: var(--surface-2); }
+
+    .sidebar {
+      width: 300px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 12px;
+      font-size: 12px;
+      display: none;
+    }
+    .sidebar.open { display: block; }
+    .sidebar h3 { margin: 8px 0 6px; font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+    .map-row {
+      display: grid;
+      grid-template-columns: 72px 1fr 1fr;
+      gap: 6px;
+      padding: 4px 6px;
+      border-bottom: 1px solid rgba(48,54,61,0.4);
+      font-family: var(--mono);
+      font-size: 11.5px;
+    }
+    .map-id { color: var(--cyan); font-weight: 600; }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.68);
+      display: none; align-items: center; justify-content: center; z-index: 30;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: min(1050px, 92vw);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .paste-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    textarea {
+      width: 100%; height: 340px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px; font-family: var(--mono); font-size: 12px; resize: vertical;
+    }
+    .file-inputs { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>IDA 伪代码补丁查看器</span>
+      <span class="brand-badge">Hex-Rays 智能 Diff 引擎</span>
+      <span id="fileLabels" style="font-weight:400; font-size:12px; color:var(--muted);"></span>
+    </div>
+    <div class="actions">
+      <select id="demoSelect">
+        <option value="cve_patch">示例: CVE 补丁 + 4类控制流重排</option>
+        <option value="branch_invert">示例: if/else 分支反转</option>
+        <option value="guard_clause">示例: Guard Clause vs 嵌套 if</option>
+        <option value="goto_move">示例: goto 标签块位置移动</option>
+      </select>
+      <button onclick="openPasteModal()">📋 粘贴 / 导入文件</button>
+      <button class="primary" onclick="jumpNextSemantic()">⬇ 下一处真实修改</button>
+      <button onclick="toggleSidebar()">🗺 变量/符号映射表</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="toggles" id="toggleBar"></div>
+    <div class="stats" id="statsBar"></div>
+  </div>
+
+  <main>
+    <div class="diff-container" id="diffContainer">
+      <table class="diff-table">
+        <thead>
+          <tr>
+            <th class="col-ln">旧行</th>
+            <th>旧版伪代码 (Old)</th>
+            <th class="col-ln">新行</th>
+            <th>新版伪代码 (New)</th>
+            <th class="col-tag">状态 / 控制流重排对齐</th>
+          </tr>
+        </thead>
+        <tbody id="diffBody"></tbody>
+      </table>
+    </div>
+    <aside class="sidebar" id="mappingSidebar"></aside>
+  </main>
+
+  <div class="modal-backdrop" id="pasteModal">
+    <div class="modal">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>粘贴或选择本地两份 IDA 伪代码</strong>
+        <button onclick="closePasteModal()">✕</button>
+      </div>
+      <div class="paste-grid">
+          <div>
+          <div class="file-inputs" style="margin-bottom:6px;">
+            <span>旧版伪代码 (Old):</span>
+            <input type="file" accept=".c,.cpp,.txt,.h" onchange="loadFile(event, 'old')" />
+          </div>
+          <textarea id="pasteOld"></textarea>
+        </div>
+        <div>
+          <div class="file-inputs" style="margin-bottom:6px;">
+            <span>新版伪代码 (New):</span>
+            <input type="file" accept=".c,.cpp,.txt,.h" onchange="loadFile(event, 'new')" />
+          </div>
+          <textarea id="pasteNew"></textarea>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button onclick="closePasteModal()">取消</button>
+        <button class="primary" onclick="applyPastedCode()">开始智能对比</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const DEMOS = {
+      cve_patch: null, // Loaded from /api/demos
+      branch_invert: {
+        old_label: "old_branch.c",
+        new_label: "new_branch.c",
+        old_src: `int __fastcall sub_401000(int a1, int a2)\n{\n  if ( a1 == 0x100 )\n  {\n    sub_401100(a2);\n    return 1;\n  }\n  else\n  {\n    sub_401200(a2);\n    return 0;\n  }\n}`,
+        new_src: `int __fastcall sub_402000(int a1, int a2)\n{\n  if ( a1 != 0x100 )\n  {\n    sub_402200(a2);\n    return 0;\n  }\n  else\n  {\n    sub_402100(a2);\n    return 1;\n  }\n}`
+      },
+      guard_clause: {
+        old_label: "old_guard.c",
+        new_label: "new_nested.c",
+        old_src: `int __fastcall sub_401000(int *a1)\n{\n  int v2; // eax\n\n  if ( !a1 )\n    return -1;\n  v2 = *a1;\n  sub_401100(v2);\n  return 0;\n}`,
+        new_src: `int __fastcall sub_402000(int *a1)\n{\n  int v3; // eax\n\n  if ( a1 )\n  {\n    v3 = *a1;\n    sub_402100(v3);\n    return 0;\n  }\n  return -1;\n}`
+      },
+      goto_move: {
+        old_label: "old_goto.c",
+        new_label: "new_goto.c",
+        old_src: `int __fastcall sub_401000(int a1)\n{\n  if ( a1 < 0 )\n    goto loc_401080;\n  sub_401100(a1);\n  return 0;\n\nloc_401080:\n  sub_401900(a1);\n  return -1;\n}`,
+        new_src: `int __fastcall sub_402000(int a1)\n{\n  if ( a1 < 0 )\n    goto loc_402020;\n  goto loc_402050;\n\nloc_402020:\n  sub_402900(a1);\n  return -1;\n\nloc_402050:\n  sub_402100(a1);\n  return 0;\n}`
+      }
+    };
+
+    const state = {
+      old_src: "",
+      new_src: "",
+      old_label: "old.c",
+      new_label: "new.c",
+      show_normalized: false,
+      semanticCursor: -1,
+      options: {
+        ignore_comments: true,
+        normalize_addresses: true,
+        sequential_address_numbering: true,
+        normalize_variables: true,
+        collapse_declarations: true,
+        simplify_ida_casts: false,
+        align_control_flow: true,
+        hide_noise_lines: false
+      },
+      result: null
+    };
+
+    const TOGGLE_DEFS = [
+      { key: "normalize_addresses", label: "地址符号归一化 (sub_/loc_)" },
+      { key: "normalize_variables", label: "局部变量重编号 (v1..vN)" },
+      { key: "ignore_comments", label: "忽略栈帧/注释" },
+      { key: "align_control_flow", label: "控制流重排对齐 (4类)" },
+      { key: "collapse_declarations", label: "声明区重排对齐" },
+      { key: "simplify_ida_casts", label: "简化 IDA 强转/宏" },
+      { key: "hide_noise_lines", label: "隐藏纯噪音行" },
+      { key: "show_normalized", label: "显示归一化伪代码", isUiOnly: true }
+    ];
+
+    function renderToggles() {
+      const bar = document.getElementById("toggleBar");
+      bar.innerHTML = "";
+      for (const def of TOGGLE_DEFS) {
+        const on = def.isUiOnly ? state.show_normalized : state.options[def.key];
+        const el = document.createElement("div");
+        el.className = "pill" + (on ? " active" : "");
+        el.innerHTML = `<span class="dot"></span><span>${def.label}</span>`;
+        el.onclick = () => {
+          if (def.isUiOnly) {
+            state.show_normalized = !state.show_normalized;
+            renderDiff();
+            renderToggles();
+          } else {
+            state.options[def.key] = !state.options[def.key];
+            runDiff();
+          }
+        };
+        bar.appendChild(el);
+      }
+    }
+
+    async function runDiff() {
+      renderToggles();
+      const resp = await fetch("/api/diff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          old_src: state.old_src,
+          new_src: state.new_src,
+          options: state.options
+        })
+      });
+      state.result = await resp.json();
+      state.semanticCursor = -1;
+      document.getElementById("fileLabels").textContent = `${state.old_label} ↔ ${state.new_label}`;
+      renderStats();
+      renderDiff();
+      renderSidebar();
+    }
+
+    function renderStats() {
+      const s = state.result.summary;
+      document.getElementById("statsBar").innerHTML = `
+        <span class="stat-chip stat-add">+${s.semantic_added_rows} 新增</span>
+        <span class="stat-chip stat-del">-${s.semantic_removed_rows} 删除</span>
+        <span class="stat-chip stat-mod">~${s.semantic_modified_rows} 修改</span>
+        <span class="stat-chip stat-noise">≈ ${s.noise_filtered_rows} 噪音已降权</span>
+        <span class="stat-chip stat-cfg">⇄ ${s.cfg_reorders_aligned} 控制流重排对齐</span>
+      `;
+    }
+
+    function esc(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function renderTokens(side) {
+      if (!side) return "";
+      if (state.show_normalized) {
+        return esc(side.normalized_text);
+      }
+      return side.tokens.map(tok => {
+        let cls = "";
+        if (tok.highlight !== "None") cls += `tok-${tok.highlight}`;
+        let title = "";
+        if (tok.normalized) {
+          cls += " tok-mapped";
+          const cp = tok.counterpart ? ` ↔ ${tok.counterpart}` : "";
+          title = ` title="规范化: ${esc(tok.normalized)}${esc(cp)}"`;
+        }
+        return cls ? `<span class="${cls.trim()}"${title}>${esc(tok.text)}</span>` : esc(tok.text);
+      }).join("");
+    }
+
+    function formatCfgBadge(tag) {
+      if (!tag) return "";
+      const t = tag.type;
+      if (t === "BranchInverted") return `<span class="cfg-badge cfg-BranchInverted">⇄ if/else 分支反转</span>`;
+      if (t === "GuardFlattened") return `<span class="cfg-badge cfg-GuardFlattened">⇄ Guard / 嵌套已对齐</span>`;
+      if (t === "LabelMoved") return `<span class="cfg-badge cfg-LabelMoved">⇄ ${esc(tag.data.label_old)}↔${esc(tag.data.label_new)}</span>`;
+      if (t === "CaseReordered") return `<span class="cfg-badge cfg-CaseReordered">⇄ ${esc(tag.data.case_key)} 重排</span>`;
+      if (t === "DeclarationBlock") return `<span class="cfg-badge cfg-DeclarationBlock">📦 声明区</span>`;
+      return "";
+    }
+
+    function renderDiff() {
+      const tbody = document.getElementById("diffBody");
+      const rows = state.result.rows;
+      let html = "";
+      for (const r of rows) {
+        if (state.options.hide_noise_lines && r.kind === "NoiseOnly") continue;
+        const oNo = r.old_line ? r.old_line.line_no : "";
+        const nNo = r.new_line ? r.new_line.line_no : "";
+        const oHtml = renderTokens(r.old_line);
+        const nHtml = renderTokens(r.new_line);
+        const statusMap = {
+          Unchanged: "",
+          NoiseOnly: `<span style="color:var(--muted);font-size:11px;">≈ 仅噪音</span> `,
+          Added: `<span style="color:var(--green);font-weight:600;font-size:11px;">+ 真实新增</span> `,
+          Removed: `<span style="color:var(--red);font-weight:600;font-size:11px;">- 真实删除</span> `,
+          Modified: `<span style="color:var(--yellow);font-weight:600;font-size:11px;">~ 真实修改</span> `
+        };
+        html += `<tr class="diff-row row-${r.kind}" data-row="${r.row_index}" data-kind="${r.kind}">
+          <td class="ln">${oNo}</td>
+          <td class="code code-old divider">${oHtml}</td>
+          <td class="ln">${nNo}</td>
+          <td class="code code-new">${nHtml}</td>
+          <td>${statusMap[r.kind] || ""}${formatCfgBadge(r.cfg_tag)}</td>
+        </tr>`;
+      }
+      tbody.innerHTML = html;
+    }
+
+    function renderSidebar() {
+      const s = state.result.summary;
+      const el = document.getElementById("mappingSidebar");
+      let html = `<h3>变量映射 (${s.variable_mappings.length})</h3>`;
+      for (const [id, o, n] of s.variable_mappings) {
+        html += `<div class="map-row"><span class="map-id">${esc(id)}</span><span>${esc(o)}</span><span>${esc(n)}</span></div>`;
+      }
+      html += `<h3 style="margin-top:14px;">地址符号映射 (${s.symbol_mappings.length})</h3>`;
+      for (const [id, o, n] of s.symbol_mappings) {
+        html += `<div class="map-row"><span class="map-id">${esc(id)}</span><span>${esc(o)}</span><span>${esc(n)}</span></div>`;
+      }
+      el.innerHTML = html;
+    }
+
+    function toggleSidebar() {
+      document.getElementById("mappingSidebar").classList.toggle("open");
+    }
+
+    function jumpNextSemantic() {
+      const rows = Array.from(document.querySelectorAll('#diffBody tr[data-kind="Added"], #diffBody tr[data-kind="Removed"], #diffBody tr[data-kind="Modified"]'));
+      if (!rows.length) return;
+      document.querySelectorAll(".row-active").forEach(x => x.classList.remove("row-active"));
+      state.semanticCursor = (state.semanticCursor + 1) % rows.length;
+      const target = rows[state.semanticCursor];
+      target.classList.add("row-active");
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    function openPasteModal() {
+      document.getElementById("pasteOld").value = state.old_src;
+      document.getElementById("pasteNew").value = state.new_src;
+      document.getElementById("pasteModal").classList.add("open");
+    }
+    function closePasteModal() {
+      document.getElementById("pasteModal").classList.remove("open");
+    }
+    function applyPastedCode() {
+      state.old_src = document.getElementById("pasteOld").value;
+      state.new_src = document.getElementById("pasteNew").value;
+      state.old_label = "pasted_old.c";
+      state.new_label = "pasted_new.c";
+      closePasteModal();
+      runDiff();
+    }
+    function loadFile(evt, side) {
+      const f = evt.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (side === "old") {
+          document.getElementById("pasteOld").value = reader.result;
+          state.old_label = f.name;
+        } else {
+          document.getElementById("pasteNew").value = reader.result;
+          state.new_label = f.name;
+        }
+      };
+      reader.readAsText(f);
+    }
+
+    document.getElementById("demoSelect").addEventListener("change", (e) => {
+      const d = DEMOS[e.target.value];
+      if (d) {
+        state.old_src = d.old_src;
+        state.new_src = d.new_src;
+        state.old_label = d.old_label;
+        state.new_label = d.new_label;
+        runDiff();
+      }
+    });
+
+    async function init() {
+      const boot = await fetch("/api/init").then(r => r.json());
+      DEMOS.cve_patch = {
+        old_src: boot.demo_old_src,
+        new_src: boot.demo_new_src,
+        old_label: "cve_patch_old.c",
+        new_label: "cve_patch_new.c"
+      };
+      state.old_src = boot.old_src;
+      state.new_src = boot.new_src;
+      state.old_label = boot.old_label;
+      state.new_label = boot.new_label;
+      state.options = boot.options;
+      await runDiff();
+    }
+
+    init();
+  </script>
+</body>
+</html>

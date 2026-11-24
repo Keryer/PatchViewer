@@ -1,0 +1,73 @@
+[
+  {
+    "name": "cjson_setval",
+    "repo": "cJSON",
+    "commit": "d6d5449",
+    "cflags": [
+      "-O2"
+    ],
+    "old_symbol": "cJSON_SetValuestring",
+    "new_symbol": "cJSON_SetValuestring",
+    "old_bin": "cjson_setval_old.elf",
+    "old_addr": "0x2c80",
+    "new_bin": "cjson_setval_new.elf",
+    "new_addr": "0x2c80"
+  },
+  {
+    "name": "cjson_dup_depth",
+    "repo": "cJSON",
+    "commit": "9d1b229",
+    "cflags": [
+      "-O2"
+    ],
+    "old_symbol": "cJSON_Duplicate",
+    "new_symbol": "cJSON_Duplicate_rec",
+    "old_bin": "cjson_dup_depth_old.elf",
+    "old_addr": "0x4820",
+    "new_bin": "cjson_dup_depth_new.elf",
+    "new_addr": "0x4820"
+  },
+  {
+    "name": "lz4_errcodes",
+    "repo": "lz4",
+    "commit": "b67d3f5",
+    "cflags": [
+      "-O2",
+      "-Ilib"
+    ],
+    "old_symbol": "LZ4_decompress_safe",
+    "new_symbol": "LZ4_decompress_safe",
+    "old_bin": "lz4_errcodes_old.elf",
+    "old_addr": "0x8f00",
+    "new_bin": "lz4_errcodes_new.elf",
+    "new_addr": "0x8ef0"
+  },
+  {
+    "name": "httpparser_oob",
+    "repo": "http-parser",
+    "commit": "9ce7316",
+    "cflags": [
+      "-O3"
+    ],
+    "old_symbol": "http_parser_parse_url",
+    "new_symbol": "http_parser_parse_url",
+    "old_bin": "httpparser_oob_old.elf",
+    "old_addr": "0x5e30",
+    "new_bin": "httpparser_oob_new.elf",
+    "new_addr": "0x5e10"
+  },
+  {
+    "name": "httpparser_exec",
+    "repo": "http-parser",
+    "commit": "7d5c99d",
+    "cflags": [
+      "-O2"
+    ],
+    "old_symbol": "http_parser_execute",
+    "new_symbol": "http_parser_execute",
+    "old_bin": "httpparser_exec_old.elf",
+    "old_addr": "0x25b0",
+    "new_bin": "httpparser_exec_new.elf",
+    "new_addr": "0x25e0"
+  }
+]
