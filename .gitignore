@@ -1,6 +1,7 @@
 # Rust / Cargo build outputs
 /target/
 apps/desktop/src-tauri/target/
+/dist/
 
 # Node / Vite / Tauri frontend build outputs
 node_modules/
