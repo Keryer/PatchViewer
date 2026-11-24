@@ -816,6 +816,18 @@ impl<'a> AstParser<'a> {
             });
         }
 
+        // Line ending with `{` (e.g. K&R `for (...) {`, `while (...) {`, `do {`)
+        if code.ends_with('{') && !code.ends_with('}') {
+            let open = self.pos;
+            self.pos += 1;
+            let (body, close) = self.parse_block_contents(false);
+            return Some(StmtNode::Block {
+                open_brace_line: Some(open),
+                body,
+                close_brace_line: close,
+            });
+        }
+
         // Function header `{ ... }` or simple statement
         let idx = self.pos;
         self.pos += 1;

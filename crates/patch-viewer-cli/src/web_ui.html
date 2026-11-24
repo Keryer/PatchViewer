@@ -190,6 +190,20 @@
     .tok-SemanticAdd { background: rgba(63, 185, 80, 0.32); color: #aff5b4; border-radius: 3px; padding: 0 1px; }
     .tok-SemanticDelete { background: rgba(248, 81, 73, 0.32); color: #ffdcd7; border-radius: 3px; padding: 0 1px; }
     .tok-SemanticModify { background: rgba(210, 153, 34, 0.34); color: #ffe58f; border-radius: 3px; padding: 0 1px; }
+    .tok-Placeholder {
+      color: #56b6c2;
+      font-style: italic;
+      opacity: 0.72;
+    }
+    td.code-placeholder {
+      background: repeating-linear-gradient(
+        -45deg,
+        rgba(57, 197, 207, 0.04),
+        rgba(57, 197, 207, 0.04) 6px,
+        rgba(255, 255, 255, 0.015) 6px,
+        rgba(255, 255, 255, 0.015) 12px
+      ) !important;
+    }
     .tok-mapped { cursor: help; }
     .tok-mapped:hover { background: rgba(57, 197, 207, 0.25); color: #fff; }
 
@@ -364,7 +378,8 @@
         collapse_declarations: true,
         simplify_ida_casts: false,
         align_control_flow: true,
-        hide_noise_lines: false
+        hide_noise_lines: false,
+        placeholder_padding: false
       },
       result: null
     };
@@ -376,6 +391,7 @@
       { key: "align_control_flow", label: "控制流重排对齐 (4类)" },
       { key: "collapse_declarations", label: "声明区重排对齐" },
       { key: "simplify_ida_casts", label: "简化 IDA 强转/宏" },
+      { key: "placeholder_padding", label: "占位填充对齐 (if(true){pass;})" },
       { key: "hide_noise_lines", label: "隐藏纯噪音行" },
       { key: "show_normalized", label: "显示归一化伪代码", isUiOnly: true }
     ];
@@ -439,6 +455,9 @@
     function renderTokens(side) {
       if (!side) return "";
       if (state.show_normalized) {
+        if (side.is_placeholder) {
+          return `<span class="tok-Placeholder">${esc(side.normalized_text)}</span>`;
+        }
         return esc(side.normalized_text);
       }
       return side.tokens.map(tok => {
@@ -471,8 +490,10 @@
       let html = "";
       for (const r of rows) {
         if (state.options.hide_noise_lines && r.kind === "NoiseOnly") continue;
-        const oNo = r.old_line ? r.old_line.line_no : "";
-        const nNo = r.new_line ? r.new_line.line_no : "";
+        const oNo = r.old_line ? (r.old_line.is_placeholder ? "·" : r.old_line.line_no) : "";
+        const nNo = r.new_line ? (r.new_line.is_placeholder ? "·" : r.new_line.line_no) : "";
+        const oPhCls = r.old_line && r.old_line.is_placeholder ? " code-placeholder" : "";
+        const nPhCls = r.new_line && r.new_line.is_placeholder ? " code-placeholder" : "";
         const oHtml = renderTokens(r.old_line);
         const nHtml = renderTokens(r.new_line);
         const statusMap = {
@@ -484,9 +505,9 @@
         };
         html += `<tr class="diff-row row-${r.kind}" data-row="${r.row_index}" data-kind="${r.kind}">
           <td class="ln">${oNo}</td>
-          <td class="code code-old divider">${oHtml}</td>
+          <td class="code code-old divider${oPhCls}">${oHtml}</td>
           <td class="ln">${nNo}</td>
-          <td class="code code-new">${nHtml}</td>
+          <td class="code code-new${nPhCls}">${nHtml}</td>
           <td>${statusMap[r.kind] || ""}${formatCfgBadge(r.cfg_tag)}</td>
         </tr>`;
       }

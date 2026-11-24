@@ -208,6 +208,10 @@ fn tui_loop(
                     state.options.simplify_ida_casts = !state.options.simplify_ida_casts;
                     state.recompute();
                 }
+                KeyCode::Char('7') => {
+                    state.options.placeholder_padding = !state.options.placeholder_padding;
+                    state.recompute();
+                }
                 _ => {}
             }
         }
@@ -308,7 +312,14 @@ fn side_to_spans<'a>(
     if show_normalized {
         let txt = &side.normalized_text;
         let clipped: String = txt.chars().take(max_chars).collect();
-        spans.push(Span::styled(clipped, Style::default().fg(base_fg)));
+        let style = if side.is_placeholder {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::DIM | Modifier::ITALIC)
+        } else {
+            Style::default().fg(base_fg)
+        };
+        spans.push(Span::styled(clipped, style));
         return spans;
     }
 
@@ -342,6 +353,9 @@ fn side_to_spans<'a>(
                 .fg(Color::Black)
                 .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+            TokenHighlight::Placeholder => Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::DIM | Modifier::ITALIC),
         };
         spans.push(Span::styled(slice, style));
     }
@@ -435,12 +449,24 @@ fn draw_diff_body(f: &mut ratatui::Frame, area: Rect, state: &TuiState) {
             let o_no = row
                 .old_line
                 .as_ref()
-                .map(|l| format!("{:>4} ", l.line_no))
+                .map(|l| {
+                    if l.is_placeholder {
+                        "   · ".to_string()
+                    } else {
+                        format!("{:>4} ", l.line_no)
+                    }
+                })
                 .unwrap_or_else(|| "     ".into());
             let n_no = row
                 .new_line
                 .as_ref()
-                .map(|l| format!("{:>4} ", l.line_no))
+                .map(|l| {
+                    if l.is_placeholder {
+                        "   · ".to_string()
+                    } else {
+                        format!("{:>4} ", l.line_no)
+                    }
+                })
                 .unwrap_or_else(|| "     ".into());
 
             let mut spans = Vec::new();
@@ -507,6 +533,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &TuiState) {
         toggle_span("4", "控制流", o.align_control_flow),
         toggle_span("5", "声明区", o.collapse_declarations),
         toggle_span("6", "强转", o.simplify_ida_casts),
+        toggle_span("7", "占位填充", o.placeholder_padding),
         toggle_span("h", "隐藏噪音", o.hide_noise_lines),
     ]);
     let line2 = Line::from(vec![

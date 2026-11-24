@@ -48,6 +48,7 @@ pub enum TokenHighlight {
     SemanticAdd,
     SemanticDelete,
     SemanticModify,
+    Placeholder,
 }
 
 /// Token-level slice inside a line, carrying optional canonical mapping metadata.
@@ -62,7 +63,7 @@ pub struct TokenSpan {
 /// One side (Old or New) of an aligned diff row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LineSide {
-    /// 1-based line number in the original input file.
+    /// 1-based line number in the original input file (0 for synthesized placeholders).
     pub line_no: usize,
     /// Original line text from input.
     pub raw_text: String,
@@ -70,6 +71,9 @@ pub struct LineSide {
     pub normalized_text: String,
     /// Tokenized spans with intra-line highlights and mapping tooltips.
     pub tokens: Vec<TokenSpan>,
+    /// True if this side was synthesized by placeholder padding mode (`if ( true )`, `pass;`, etc.).
+    #[serde(default)]
+    pub is_placeholder: bool,
 }
 
 /// A single row in the side-by-side / unified diff view.

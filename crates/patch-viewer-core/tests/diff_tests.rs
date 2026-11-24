@@ -259,6 +259,7 @@ fn test_cve_example_pair_isolates_security_patch() {
             simplify_ida_casts: false,
             align_control_flow: false,
             hide_noise_lines: false,
+            placeholder_padding: false,
         },
     );
 
@@ -343,4 +344,215 @@ LABEL_25:
         .expect("aligned label block call");
     assert_eq!(label_call.kind, ChangeKind::NoiseOnly);
 }
+
+#[test]
+fn test_placeholder_padding_mode_fills_added_check_and_removed_block() {
+    let old = r#"int __fastcall sub_401000(int a1)
+{
+  sub_401200(a1);
+  if ( a1 < 0 )
+  {
+    sub_401900(a1);
+    return -1;
+  }
+  return 0;
+}"#;
+    let new = r#"int __fastcall sub_402000(int a1)
+{
+  if ( a1 > 100 )
+  {
+    sub_402100(a1);
+    return -2;
+  }
+  sub_402200(a1);
+  return 0;
+}"#;
+
+    let mut opts_off = DiffOptions::default();
+    opts_off.placeholder_padding = false;
+    let res_off = diff_pseudocode(old, new, &opts_off);
+    assert!(res_off
+        .rows
+        .iter()
+        .any(|r| r.kind == ChangeKind::Added && r.old_line.is_none()));
+
+    let mut opts_on = DiffOptions::default();
+    opts_on.placeholder_padding = true;
+    let res_on = diff_pseudocode(old, new, &opts_on);
+
+    // Every Added row now has a synthesized placeholder on old_line
+    let added_rows: Vec<_> = res_on
+        .rows
+        .iter()
+        .filter(|r| r.kind == ChangeKind::Added)
+        .collect();
+    assert_eq!(added_rows.len(), 5);
+    assert!(added_rows.iter().all(|r| {
+        r.old_line
+            .as_ref()
+            .map(|l| l.is_placeholder && l.line_no == 0)
+            .unwrap_or(false)
+    }));
+    let added_placeholders: Vec<&str> = added_rows
+        .iter()
+        .map(|r| r.old_line.as_ref().unwrap().raw_text.trim())
+        .collect();
+    assert_eq!(
+        added_placeholders,
+        vec![
+            "if ( true ) // [占位]",
+            "{ // [占位]",
+            "pass; // [占位]",
+            "pass; // [占位]",
+            "} // [占位]"
+        ]
+    );
+
+    // Every Removed row now has a synthesized placeholder on new_line
+    let removed_rows: Vec<_> = res_on
+        .rows
+        .iter()
+        .filter(|r| r.kind == ChangeKind::Removed)
+        .collect();
+    assert_eq!(removed_rows.len(), 5);
+    assert!(removed_rows.iter().all(|r| {
+        r.new_line
+            .as_ref()
+            .map(|l| l.is_placeholder && l.line_no == 0)
+            .unwrap_or(false)
+    }));
+    let removed_placeholders: Vec<&str> = removed_rows
+        .iter()
+        .map(|r| r.new_line.as_ref().unwrap().raw_text.trim())
+        .collect();
+    assert_eq!(
+        removed_placeholders,
+        vec![
+            "if ( true ) // [占位]",
+            "{ // [占位]",
+            "pass; // [占位]",
+            "pass; // [占位]",
+            "} // [占位]"
+        ]
+    );
+
+    // Summary counts must remain identical whether padding is on or off
+    assert_eq!(res_on.summary.semantic_added_rows, res_off.summary.semantic_added_rows);
+    assert_eq!(res_on.summary.semantic_removed_rows, res_off.summary.semantic_removed_rows);
+}
+
+#[test]
+fn test_placeholder_padding_for_wrapped_loop() {
+    // Case A: Existing code wrapped inside a `for` loop
+    let old_for = r#"int __fastcall sub_401000(int *a1, int a2)
+{
+  sub_401100(a1);
+  sub_401200(a1);
+  return 0;
+}"#;
+    let new_for = r#"int __fastcall sub_402000(int *a1, int a2)
+{
+  for ( int k = 0; k < a2; ++k )
+  {
+    sub_402100(a1);
+    sub_402200(a1);
+  }
+  return 0;
+}"#;
+
+    let mut opts = DiffOptions::default();
+    opts.placeholder_padding = true;
+
+    let res_for = diff_pseudocode(old_for, new_for, &opts);
+    let old_ph_for: Vec<String> = res_for
+        .rows
+        .iter()
+        .filter_map(|r| {
+            r.old_line
+                .as_ref()
+                .filter(|l| l.is_placeholder)
+                .map(|l| l.raw_text.trim().to_string())
+        })
+        .collect();
+    assert_eq!(
+        old_ph_for,
+        vec![
+            "for ( int i = 1; i < 2; i++ ) // [占位]",
+            "{ // [占位]",
+            "} // [占位]"
+        ]
+    );
+    assert!(res_for
+        .rows
+        .iter()
+        .any(|r| r.kind == ChangeKind::NoiseOnly
+            && r.old_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("sub_401100"))
+                .unwrap_or(false)));
+
+    // Case B: Existing code wrapped inside a `while` loop -> single-iteration `for ( int i = 1; i < 2; i++ )`
+    let new_while = r#"int __fastcall sub_402000(int *a1, int a2)
+{
+  while ( a2-- > 0 )
+  {
+    sub_402100(a1);
+    sub_402200(a1);
+  }
+  return 0;
+}"#;
+    let res_while = diff_pseudocode(old_for, new_while, &opts);
+    let old_ph_while: Vec<String> = res_while
+        .rows
+        .iter()
+        .filter_map(|r| {
+            r.old_line
+                .as_ref()
+                .filter(|l| l.is_placeholder)
+                .map(|l| l.raw_text.trim().to_string())
+        })
+        .collect();
+    assert_eq!(
+        old_ph_while,
+        vec![
+            "for ( int i = 1; i < 2; i++ ) // [占位]",
+            "{ // [占位]",
+            "} // [占位]"
+        ]
+    );
+
+    // Case C: Existing code wrapped inside a `do { ... } while (...);` loop
+    let new_do = r#"int __fastcall sub_402000(int *a1, int a2)
+{
+  do
+  {
+    sub_402100(a1);
+    sub_402200(a1);
+  }
+  while ( a2-- > 0 );
+  return 0;
+}"#;
+    let res_do = diff_pseudocode(old_for, new_do, &opts);
+    let old_ph_do: Vec<String> = res_do
+        .rows
+        .iter()
+        .filter_map(|r| {
+            r.old_line
+                .as_ref()
+                .filter(|l| l.is_placeholder)
+                .map(|l| l.raw_text.trim().to_string())
+        })
+        .collect();
+    assert_eq!(
+        old_ph_do,
+        vec![
+            "do // [占位]",
+            "{ // [占位]",
+            "} // [占位]",
+            "while ( false ); // [占位]"
+        ]
+    );
+}
+
+
 

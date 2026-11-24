@@ -26,6 +26,9 @@ pub struct DiffOptions {
     pub align_control_flow: bool,
     /// Hint for UI/CLI renderers to hide or fold `NoiseOnly` rows.
     pub hide_noise_lines: bool,
+    /// Fill missing sides of `Added` / `Removed` rows with structural placeholders
+    /// (e.g. `if ( true )`, `{`, `pass;`, `}`) to keep both versions structurally aligned.
+    pub placeholder_padding: bool,
 }
 
 impl Default for DiffOptions {
@@ -39,6 +42,7 @@ impl Default for DiffOptions {
             simplify_ida_casts: false,
             align_control_flow: true,
             hide_noise_lines: false,
+            placeholder_padding: false,
         }
     }
 }

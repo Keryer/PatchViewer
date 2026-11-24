@@ -10,13 +10,14 @@ export interface DiffOptions {
   simplify_ida_casts: boolean;
   align_control_flow: boolean;
   hide_noise_lines: boolean;
+  placeholder_padding: boolean;
 }
 
 export interface TokenSpan {
   text: string;
   normalized?: string | null;
   counterpart?: string | null;
-  highlight: "None" | "NoiseChange" | "SemanticAdd" | "SemanticDelete" | "SemanticModify";
+  highlight: "None" | "NoiseChange" | "SemanticAdd" | "SemanticDelete" | "SemanticModify" | "Placeholder";
 }
 
 export interface LineSide {
@@ -24,6 +25,7 @@ export interface LineSide {
   raw_text: string;
   normalized_text: string;
   tokens: TokenSpan[];
+  is_placeholder?: boolean;
 }
 
 export type CfgReorderTag =
@@ -67,7 +69,8 @@ const DEFAULT_OPTIONS: DiffOptions = {
   collapse_declarations: true,
   simplify_ida_casts: false,
   align_control_flow: true,
-  hide_noise_lines: false
+  hide_noise_lines: false,
+  placeholder_padding: false
 };
 
 const DEMOS: Record<string, { oldLabel: string; newLabel: string; oldSrc: string; newSrc: string }> = {
@@ -154,7 +157,13 @@ export default function App() {
 
   const renderSide = (side?: LineSide | null) => {
     if (!side) return null;
-    if (showNormalized) return side.normalized_text;
+    if (showNormalized) {
+      return side.is_placeholder ? (
+        <span className="tok-Placeholder">{side.normalized_text}</span>
+      ) : (
+        side.normalized_text
+      );
+    }
     return side.tokens.map((tok, i) => {
       const cls = [
         tok.highlight !== "None" ? `tok-${tok.highlight}` : "",
@@ -254,6 +263,7 @@ export default function App() {
               ["align_control_flow", "控制流重排对齐 (4类)"],
               ["collapse_declarations", "声明区重排对齐"],
               ["simplify_ida_casts", "简化 IDA 强转/宏"],
+              ["placeholder_padding", "占位填充对齐 (if(true){pass;})"],
               ["hide_noise_lines", "隐藏纯噪音行"]
             ] as [keyof DiffOptions, string][]
           ).map(([k, label]) => (
@@ -305,10 +315,22 @@ export default function App() {
                   data-row={r.row_index}
                   className={`diff-row row-${r.kind} ${activeRow === r.row_index ? "row-active" : ""}`}
                 >
-                  <td className="ln">{r.old_line?.line_no ?? ""}</td>
-                  <td className="code code-old divider">{renderSide(r.old_line)}</td>
-                  <td className="ln">{r.new_line?.line_no ?? ""}</td>
-                  <td className="code code-new">{renderSide(r.new_line)}</td>
+                  <td className="ln">
+                    {r.old_line ? (r.old_line.is_placeholder ? "·" : r.old_line.line_no) : ""}
+                  </td>
+                  <td
+                    className={`code code-old divider ${r.old_line?.is_placeholder ? "code-placeholder" : ""}`}
+                  >
+                    {renderSide(r.old_line)}
+                  </td>
+                  <td className="ln">
+                    {r.new_line ? (r.new_line.is_placeholder ? "·" : r.new_line.line_no) : ""}
+                  </td>
+                  <td
+                    className={`code code-new ${r.new_line?.is_placeholder ? "code-placeholder" : ""}`}
+                  >
+                    {renderSide(r.new_line)}
+                  </td>
                   <td>
                     {r.kind === "NoiseOnly" && (
                       <span style={{ color: "var(--muted)", fontSize: 11 }}>≈ 仅噪音 </span>

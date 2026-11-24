@@ -58,8 +58,12 @@ pub fn diff_pseudocode(old_src: &str, new_src: &str, options: &DiffOptions) -> D
         row.row_index = idx;
     }
 
-    // Build summary & mapping tables
+    // Build summary & mapping tables before placeholder padding so summary stats stay exact
     let summary = build_summary(&rows, &maps);
+
+    if options.placeholder_padding {
+        apply_placeholder_padding(&mut rows);
+    }
 
     DiffResult {
         rows,
@@ -741,6 +745,7 @@ fn build_single_side(
         raw_text: parsed.raw_text.clone(),
         normalized_text: norm.canonical_display.clone(),
         tokens,
+        is_placeholder: false,
     }
 }
 
@@ -947,14 +952,224 @@ fn build_paired_sides(
             raw_text: old_parsed.raw_text.clone(),
             normalized_text: old_norm.canonical_display.clone(),
             tokens: o_spans,
+            is_placeholder: false,
         },
         LineSide {
             line_no: new_parsed.line_no,
             raw_text: new_parsed.raw_text.clone(),
             normalized_text: new_norm.canonical_display.clone(),
             tokens: n_spans,
+            is_placeholder: false,
         },
     )
+}
+
+fn extract_code_only(raw: &str) -> String {
+    let mut in_bc = false;
+    let raw_toks = crate::parser::lex_line(raw, &mut in_bc);
+    crate::parser::code_only_text(&raw_toks)
+}
+
+fn count_code_braces(code: &str) -> (isize, isize) {
+    let mut in_bc = false;
+    let toks = crate::parser::lex_line(code, &mut in_bc);
+    let mut open = 0isize;
+    let mut close = 0isize;
+    for t in toks {
+        if t.kind == RawTokenKind::Punctuation {
+            if t.text == "{" {
+                open += 1;
+            } else if t.text == "}" {
+                close += 1;
+            }
+        }
+    }
+    (open, close)
+}
+
+fn loop_header_wraps_existing_code(rows: &[AlignedRow], start_idx: usize, is_added: bool) -> bool {
+    let side = if is_added {
+        rows[start_idx].new_line.as_ref()
+    } else {
+        rows[start_idx].old_line.as_ref()
+    };
+    let Some(hdr_side) = side else {
+        return false;
+    };
+    let hdr_code = extract_code_only(&hdr_side.raw_text);
+    let (mut open_b, mut close_b) = count_code_braces(&hdr_code);
+    let mut depth = open_b - close_b;
+    let mut saw_brace = depth > 0;
+
+    for row in rows.iter().skip(start_idx + 1) {
+        let cur_side = if is_added {
+            row.new_line.as_ref()
+        } else {
+            row.old_line.as_ref()
+        };
+        let Some(s) = cur_side else {
+            continue;
+        };
+        let code = extract_code_only(&s.raw_text);
+        if code.is_empty() && !saw_brace {
+            continue;
+        }
+        if !saw_brace {
+            if code == "{" || code.starts_with('{') {
+                saw_brace = true;
+                let (o, c) = count_code_braces(&code);
+                depth += o - c;
+                if matches!(
+                    row.kind,
+                    ChangeKind::Unchanged | ChangeKind::NoiseOnly | ChangeKind::Modified
+                ) {
+                    return true;
+                }
+                if depth <= 0 {
+                    break;
+                }
+                continue;
+            } else {
+                // Single-statement loop body
+                return matches!(
+                    row.kind,
+                    ChangeKind::Unchanged | ChangeKind::NoiseOnly | ChangeKind::Modified
+                );
+            }
+        }
+
+        if matches!(
+            row.kind,
+            ChangeKind::Unchanged | ChangeKind::NoiseOnly | ChangeKind::Modified
+        ) {
+            return true;
+        }
+        (open_b, close_b) = count_code_braces(&code);
+        depth += open_b - close_b;
+        if depth <= 0 {
+            break;
+        }
+    }
+    false
+}
+
+fn apply_placeholder_padding(rows: &mut [AlignedRow]) {
+    let mut wraps_flags = vec![false; rows.len()];
+    for (idx, row) in rows.iter().enumerate() {
+        match row.kind {
+            ChangeKind::Added if row.old_line.is_none() => {
+                wraps_flags[idx] = loop_header_wraps_existing_code(rows, idx, true);
+            }
+            ChangeKind::Removed if row.new_line.is_none() => {
+                wraps_flags[idx] = loop_header_wraps_existing_code(rows, idx, false);
+            }
+            _ => {}
+        }
+    }
+
+    for (idx, row) in rows.iter_mut().enumerate() {
+        let wraps = wraps_flags[idx];
+        match row.kind {
+            ChangeKind::Added if row.old_line.is_none() => {
+                if let Some(new_side) = &row.new_line {
+                    row.old_line = Some(synthesize_placeholder_side(new_side, &row.cfg_tag, wraps));
+                }
+            }
+            ChangeKind::Removed if row.new_line.is_none() => {
+                if let Some(old_side) = &row.old_line {
+                    row.new_line = Some(synthesize_placeholder_side(old_side, &row.cfg_tag, wraps));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn starts_with_kw(code: &str, kw: &str) -> bool {
+    if code == kw {
+        return true;
+    }
+    if let Some(rest) = code.strip_prefix(kw) {
+        return rest.starts_with(char::is_whitespace)
+            || rest.starts_with('(')
+            || rest.starts_with('{');
+    }
+    false
+}
+
+fn synthesize_placeholder_side(
+    counterpart: &LineSide,
+    cfg_tag: &Option<CfgReorderTag>,
+    wraps_existing_code: bool,
+) -> LineSide {
+    let indent: String = counterpart
+        .raw_text
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+
+    let code = extract_code_only(&counterpart.raw_text);
+    let trimmed = code.trim();
+    let ends_with_brace = trimmed.ends_with('{');
+    let brace_suffix = if ends_with_brace { " {" } else { "" };
+
+    let mut comment = "// [占位]";
+    let body = if matches!(cfg_tag, Some(CfgReorderTag::DeclarationBlock)) {
+        comment = "// [占位: 声明]";
+        "pass;".to_string()
+    } else if trimmed == "{" {
+        "{".to_string()
+    } else if trimmed == "}" || trimmed == "};" {
+        "}".to_string()
+    } else if trimmed.starts_with("else if")
+        && trimmed
+            .strip_prefix("else if")
+            .map(|r| r.trim_start().starts_with('('))
+            .unwrap_or(false)
+    {
+        format!("else if ( true ){brace_suffix}")
+    } else if starts_with_kw(trimmed, "if") {
+        format!("if ( true ){brace_suffix}")
+    } else if starts_with_kw(trimmed, "else") {
+        format!("else{brace_suffix}")
+    } else if starts_with_kw(trimmed, "do") {
+        format!("do{brace_suffix}")
+    } else if starts_with_kw(trimmed, "while") {
+        if trimmed.ends_with(';') {
+            "while ( false );".to_string()
+        } else if wraps_existing_code {
+            format!("for ( int i = 1; i < 2; i++ ){brace_suffix}")
+        } else {
+            format!("while ( false ){brace_suffix}")
+        }
+    } else if starts_with_kw(trimmed, "for") {
+        format!("for ( int i = 1; i < 2; i++ ){brace_suffix}")
+    } else if starts_with_kw(trimmed, "switch") {
+        format!("switch ( 0 ){brace_suffix}")
+    } else if trimmed.starts_with("case ") && trimmed.ends_with(':') {
+        trimmed.to_string()
+    } else if trimmed == "default:" || trimmed.starts_with("default :") {
+        "default:".to_string()
+    } else if trimmed.ends_with(':') {
+        comment = "// [占位: 标签]";
+        "pass;".to_string()
+    } else {
+        "pass;".to_string()
+    };
+
+    let text = format!("{indent}{body} {comment}");
+    LineSide {
+        line_no: 0,
+        raw_text: text.clone(),
+        normalized_text: text.clone(),
+        tokens: vec![TokenSpan {
+            text,
+            normalized: None,
+            counterpart: None,
+            highlight: TokenHighlight::Placeholder,
+        }],
+        is_placeholder: true,
+    }
 }
 
 fn build_summary(rows: &[AlignedRow], maps: &CanonicalMaps) -> DiffSummary {

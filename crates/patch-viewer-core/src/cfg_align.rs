@@ -1272,6 +1272,138 @@ impl<'a> AlignContext<'a> {
             }
         }
 
+        // Case E: Wrapper loop (`for (...) { body }`, `while (...) { body }`, `do { body } while (...)`)
+        // wrapping existing statements on either side
+        if let Some(true) =
+            self.try_align_wrapper_loop(old_slice, new_slice, inherited_tag.clone(), out)
+        {
+            return Some(true);
+        }
+
+        Some(false)
+    }
+
+    fn is_loop_header_line(&self, line_idx: usize, is_old: bool) -> bool {
+        let g = if is_old {
+            self.old_generic[line_idx].trim()
+        } else {
+            self.new_generic[line_idx].trim()
+        };
+        let starts_kw = |kw: &str| {
+            g == kw
+                || g.strip_prefix(kw)
+                    .map(|r| r.starts_with(char::is_whitespace) || r.starts_with('(') || r.starts_with('{'))
+                    .unwrap_or(false)
+        };
+        starts_kw("for") || starts_kw("do") || (starts_kw("while") && !g.ends_with(';'))
+    }
+
+    fn extract_wrapper_loop<'b>(
+        &self,
+        slice: &[&'b StmtNode],
+        is_old: bool,
+    ) -> Option<(Vec<usize>, &'b [StmtNode], Option<usize>, usize)> {
+        match slice.first() {
+            Some(StmtNode::Simple { line_idx }) if self.is_loop_header_line(*line_idx, is_old) => {
+                if let Some(StmtNode::Block {
+                    open_brace_line,
+                    body,
+                    close_brace_line,
+                }) = slice.get(1)
+                {
+                    if !body.is_empty() {
+                        let mut hdr = vec![*line_idx];
+                        if let Some(ob) = open_brace_line {
+                            hdr.push(*ob);
+                        }
+                        return Some((hdr, body.as_slice(), *close_brace_line, 2));
+                    }
+                }
+                None
+            }
+            Some(StmtNode::Block {
+                open_brace_line: Some(open_line),
+                body,
+                close_brace_line,
+            }) if self.is_loop_header_line(*open_line, is_old) && !body.is_empty() => {
+                Some((vec![*open_line], body.as_slice(), *close_brace_line, 1))
+            }
+            _ => None,
+        }
+    }
+
+    fn try_align_wrapper_loop(
+        &self,
+        old_slice: &[&StmtNode],
+        new_slice: &[&StmtNode],
+        inherited_tag: Option<CfgReorderTag>,
+        out: &mut Vec<AlignedSegment>,
+    ) -> Option<bool> {
+        if let Some((hdr_idxs, loop_body, close_idx, consumed)) =
+            self.extract_wrapper_loop(new_slice, false)
+        {
+            let old_owned: Vec<StmtNode> = old_slice.iter().map(|s| (*s).clone()).collect();
+            if self.body_similarity(&old_owned, loop_body) >= 0.45 {
+                let tag = Some(CfgReorderTag::GuardFlattened {
+                    note: "新增循环包裹原有代码块，已展开对齐内部语句".to_string(),
+                });
+                out.push(AlignedSegment {
+                    old_indices: Vec::new(),
+                    new_indices: hdr_idxs,
+                    tag: tag.clone(),
+                    condition_inverted_pair: false,
+                    is_declaration_block: false,
+                });
+                self.align_node_slice(&old_owned, loop_body, inherited_tag.clone(), out);
+                if let Some(c) = close_idx {
+                    out.push(AlignedSegment {
+                        old_indices: Vec::new(),
+                        new_indices: vec![c],
+                        tag,
+                        condition_inverted_pair: false,
+                        is_declaration_block: false,
+                    });
+                }
+                if new_slice.len() > consumed {
+                    self.emit_unmatched_slice(&new_slice[consumed..], false, inherited_tag, out);
+                }
+                return Some(true);
+            }
+        }
+
+        // Pattern 2 (Symmetric): Old wraps New inside a loop
+        if let Some((hdr_idxs, loop_body, close_idx, consumed)) =
+            self.extract_wrapper_loop(old_slice, true)
+        {
+            let new_owned: Vec<StmtNode> = new_slice.iter().map(|s| (*s).clone()).collect();
+            if self.body_similarity(loop_body, &new_owned) >= 0.45 {
+                let tag = Some(CfgReorderTag::GuardFlattened {
+                    note: "原有循环包裹代码块已展开对齐内部语句".to_string(),
+                });
+                out.push(AlignedSegment {
+                    old_indices: hdr_idxs,
+                    new_indices: Vec::new(),
+                    tag: tag.clone(),
+                    condition_inverted_pair: false,
+                    is_declaration_block: false,
+                });
+                self.align_node_slice(loop_body, &new_owned, inherited_tag.clone(), out);
+                if let Some(c) = close_idx {
+                    out.push(AlignedSegment {
+                        old_indices: vec![c],
+                        new_indices: Vec::new(),
+                        tag,
+                        condition_inverted_pair: false,
+                        is_declaration_block: false,
+                    });
+                }
+                if old_slice.len() > consumed {
+                    self.emit_unmatched_slice(&old_slice[consumed..], true, inherited_tag, out);
+                }
+                return Some(true);
+            }
+        }
+
         Some(false)
     }
 

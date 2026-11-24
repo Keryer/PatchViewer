@@ -10,6 +10,7 @@ const BG_GREEN: &str = "\x1b[48;5;22m";
 const YELLOW: &str = "\x1b[33m";
 const BG_YELLOW: &str = "\x1b[48;5;58m";
 const CYAN: &str = "\x1b[36m";
+const DIM_CYAN_ITALIC: &str = "\x1b[2;3;36m";
 const MAGENTA: &str = "\x1b[35m";
 const GRAY: &str = "\x1b[90m";
 
@@ -72,6 +73,9 @@ fn render_tokens_ansi(
             }
             TokenHighlight::SemanticModify => {
                 out.push_str(&format!("{BG_YELLOW}{YELLOW}{}{RESET}", t.text));
+            }
+            TokenHighlight::Placeholder => {
+                out.push_str(&format!("{DIM_CYAN_ITALIC}{}{RESET}", t.text));
             }
         }
     }
@@ -204,13 +208,28 @@ pub fn print_ansi_diff(
         let o_num = r
             .old_line
             .as_ref()
-            .map(|l| format!("{:>4}", l.line_no))
+            .map(|l| {
+                if l.is_placeholder {
+                    "   ·".to_string()
+                } else {
+                    format!("{:>4}", l.line_no)
+                }
+            })
             .unwrap_or_else(|| "    ".to_string());
         let n_num = r
             .new_line
             .as_ref()
-            .map(|l| format!("{:>4}", l.line_no))
+            .map(|l| {
+                if l.is_placeholder {
+                    "   ·".to_string()
+                } else {
+                    format!("{:>4}", l.line_no)
+                }
+            })
             .unwrap_or_else(|| "    ".to_string());
+
+        let o_is_ph = r.old_line.as_ref().map(|l| l.is_placeholder).unwrap_or(false);
+        let n_is_ph = r.new_line.as_ref().map(|l| l.is_placeholder).unwrap_or(false);
 
         let o_raw = r
             .old_line
@@ -255,13 +274,21 @@ pub fn print_ansi_diff(
                 format!("{YELLOW}{BOLD}~ 修改{RESET}"),
             ),
             ChangeKind::Added => (
-                format!("{GRAY}{o_pad}{RESET}"),
+                if o_is_ph {
+                    format!("{DIM_CYAN_ITALIC}{o_pad}{RESET}")
+                } else {
+                    format!("{GRAY}{o_pad}{RESET}")
+                },
                 format!("{GREEN}{n_pad}{RESET}"),
                 format!("{GREEN}{BOLD}+ 新增{RESET}"),
             ),
             ChangeKind::Removed => (
                 format!("{RED}{o_pad}{RESET}"),
-                format!("{GRAY}{n_pad}{RESET}"),
+                if n_is_ph {
+                    format!("{DIM_CYAN_ITALIC}{n_pad}{RESET}")
+                } else {
+                    format!("{GRAY}{n_pad}{RESET}")
+                },
                 format!("{RED}{BOLD}- 删除{RESET}"),
             ),
         };

@@ -93,6 +93,10 @@ struct Cli {
     /// 隐藏仅包含归一化噪音的行
     #[arg(long)]
     hide_noise: bool,
+
+    /// 启用占位填充模式（缺失侧自动补齐 if (true) { pass; } 等结构占位以对齐代码）
+    #[arg(long = "placeholder-pad", alias = "pad")]
+    placeholder_pad: bool,
 }
 
 fn load_inputs(cli: &Cli) -> Result<(String, String, String, String)> {
@@ -135,6 +139,7 @@ fn main() -> Result<()> {
         simplify_ida_casts: cli.simplify_casts,
         align_control_flow: !cli.no_cfg_align,
         hide_noise_lines: cli.hide_noise,
+        placeholder_padding: cli.placeholder_pad,
     };
 
     if let Some(port) = cli.gui {
