@@ -43,14 +43,27 @@ pub fn diff_pseudocode(old_src: &str, new_src: &str, options: &DiffOptions) -> D
     );
 
     // Pass 2: Render canonical normalized lines for every line in old and new.
-    let old_norm: Vec<NormalizedLine> = old_lines
+    let mut old_norm: Vec<NormalizedLine> = old_lines
         .iter()
         .map(|l| render_canonical_line_with_types(l, true, &old_types, &mut maps, options))
         .collect();
-    let new_norm: Vec<NormalizedLine> = new_lines
+    let mut new_norm: Vec<NormalizedLine> = new_lines
         .iter()
         .map(|l| render_canonical_line_with_types(l, false, &new_types, &mut maps, options))
         .collect();
+
+    // Pass 2b: Project internal IR (`MEM_*B`, `BF`, `BF_SET`, `$PTR`, `8B`) back into pure,
+    // standard Hex-Rays C before computing row diffs and display output.
+    if options.normalize_pointer_units {
+        for n in &mut old_norm {
+            n.canonical_key = crate::type_norm::render_pure_c_text(&n.canonical_key);
+            n.canonical_display = crate::type_norm::render_pure_c_text(&n.canonical_display);
+        }
+        for n in &mut new_norm {
+            n.canonical_key = crate::type_norm::render_pure_c_text(&n.canonical_key);
+            n.canonical_display = crate::type_norm::render_pure_c_text(&n.canonical_display);
+        }
+    }
 
     // Pass 3: Build AlignedRows from each structural segment.
     let mut rows = Vec::new();

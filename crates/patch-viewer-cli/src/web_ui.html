@@ -240,6 +240,7 @@
       border-bottom: 1px solid rgba(48,54,61,0.4);
       font-family: var(--mono);
       font-size: 11.5px;
+      overflow-wrap: anywhere;
     }
     .map-id { color: var(--cyan); font-weight: 600; }
 
@@ -388,7 +389,7 @@
     const TOGGLE_DEFS = [
       { key: "normalize_addresses", label: "地址符号归一化 (sub_/loc_)" },
       { key: "normalize_variables", label: "局部变量重编号 (v1..vN)" },
-      { key: "normalize_pointer_units", label: "指针/位域最小单位 (1B/1bit)" },
+      { key: "normalize_pointer_units", label: "指针/位域最小宽度对齐" },
       { key: "ignore_comments", label: "忽略栈帧/注释" },
       { key: "align_control_flow", label: "控制流重排对齐 (4类)" },
       { key: "collapse_declarations", label: "声明区重排对齐" },

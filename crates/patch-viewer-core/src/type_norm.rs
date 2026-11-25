@@ -217,7 +217,8 @@ fn parse_decl_entry(toks: &[&RawToken]) -> Option<(String, usize)> {
 
 /// Parse C decimal or hex integer literal, rejecting already-normalized unit literals (`8B`, `10b`, `7w`).
 fn parse_c_int(s: &str) -> Option<i128> {
-    if s.ends_with('B') || s.ends_with('b') || s.ends_with('w') {
+    let is_hex = s.starts_with("0x") || s.starts_with("0X");
+    if !is_hex && (s.ends_with('B') || s.ends_with('b') || s.ends_with('w')) {
         return None;
     }
     let lower = s.to_ascii_lowercase();
@@ -1767,6 +1768,10 @@ fn needs_space(prev: &RawToken, curr: &RawToken, prev_prev: Option<&RawToken>) -
     if matches!(prev.text.as_str(), "++" | "--") && curr.kind == RawTokenKind::Identifier {
         return false;
     }
+    // `char *$VAR` / `char **`
+    if prev.text == "*" && prev_prev.map(|t| t.text.as_str()) == Some("char") {
+        return curr.text == "=";
+    }
     true
 }
 
@@ -1791,7 +1796,7 @@ fn format_with_canonical_ws(leading_ws: Option<RawToken>, sig: Vec<RawToken>) ->
 }
 
 /// Normalize pointer strides, byte offsets, dereferences, and bitfield accesses
-/// to minimum units (`1B` and `1bit`) and canonicalize pointer types to `$PTR`.
+/// to minimum strictly equivalent units and canonical `char *` pointer types.
 pub fn normalize_line_pointer_units(
     line: &ParsedLine,
     tokens: &[RawToken],
@@ -1832,4 +1837,300 @@ pub fn normalize_line_pointer_units(
     };
 
     format_with_canonical_ws(leading_ws, rewritten)
+}
+
+/// Map a byte width to its idiomatic IDA Hex-Rays unsigned typedef.
+pub fn width_to_ida_type(width: usize) -> &'static str {
+    match width {
+        1 => "_BYTE",
+        2 => "_WORD",
+        4 => "_DWORD",
+        8 => "_QWORD",
+        16 => "__m128i",
+        32 => "__m256i",
+        _ => "_DWORD",
+    }
+}
+
+/// Format an internal memory access `MEM_<W>B(base +/- byte_off)` back into pure Hex-Rays C.
+pub fn format_mem_c(width: usize, base: &str, byte_off: i128) -> String {
+    let ty = width_to_ida_type(width);
+    if byte_off == 0 {
+        format!("*({ty} *){base}")
+    } else if width == 1 {
+        if byte_off > 0 {
+            format!("*((_BYTE *){base} + {byte_off})")
+        } else {
+            format!("*((_BYTE *){base} - {})", -byte_off)
+        }
+    } else if byte_off > 0 {
+        format!("*({ty} *)((char *){base} + {byte_off})")
+    } else {
+        format!("*({ty} *)((char *){base} - {})", -byte_off)
+    }
+}
+
+fn min_bitfield_width(bit_off: i128, bits: usize) -> (i128, usize, usize) {
+    let byte_off = bit_off.div_euclid(8);
+    let rem_shift = bit_off.rem_euclid(8) as usize;
+    let width = [1usize, 2, 4, 8]
+        .into_iter()
+        .find(|&w| rem_shift + bits <= w * 8)
+        .unwrap_or(8);
+    (byte_off, rem_shift, width)
+}
+
+/// Format an internal bitfield read `BF(base, bit_off, bits)` as minimum-width pure Hex-Rays C.
+pub fn format_bf_read_c(base: &str, bit_off: i128, bits: usize) -> String {
+    let (byte_off, rem_shift, min_w) = min_bitfield_width(bit_off, bits);
+    let mask = if bits >= 64 {
+        u64::MAX as u128
+    } else {
+        (1u128 << bits) - 1
+    };
+    let mem_c = format_mem_c(min_w, base, byte_off);
+    if rem_shift == 0 {
+        format!("({mem_c} & 0x{mask:X})")
+    } else {
+        format!("(({mem_c} >> {rem_shift}) & 0x{mask:X})")
+    }
+}
+
+/// Format an internal bitfield write `BF_SET(base, bit_off, bits, val)` as minimum-width pure Hex-Rays C.
+pub fn format_bf_set_c(base: &str, bit_off: i128, bits: usize, val_text: &str) -> String {
+    let (byte_off, rem_shift, min_w) = min_bitfield_width(bit_off, bits);
+    let word_mask = word_bit_mask(min_w).unwrap_or(u64::MAX as u128);
+    let field_mask = if bits >= 64 {
+        u64::MAX as u128
+    } else {
+        (1u128 << bits) - 1
+    };
+    let clear_mask = word_mask ^ (field_mask << rem_shift);
+    let mem_c = format_mem_c(min_w, base, byte_off);
+    let val = val_text.trim();
+    if rem_shift == 0 && parse_c_int(val).is_some() {
+        format!("{mem_c} = ({mem_c} & 0x{clear_mask:X}) | {val}")
+    } else if rem_shift == 0 {
+        format!("{mem_c} = ({mem_c} & 0x{clear_mask:X}) | ({val} & 0x{field_mask:X})")
+    } else {
+        format!(
+            "{mem_c} = ({mem_c} & 0x{clear_mask:X}) | (({val} & 0x{field_mask:X}) << {rem_shift})"
+        )
+    }
+}
+
+fn lex_no_ws(s: &str) -> Vec<RawToken> {
+    let mut in_bc = false;
+    crate::parser::lex_line(s, &mut in_bc)
+        .into_iter()
+        .filter(|t| t.kind != RawTokenKind::Whitespace)
+        .collect()
+}
+
+fn tokens_to_pure_c_string(sig: Vec<RawToken>) -> String {
+    let rendered = render_pure_c_tokens(sig);
+    format_with_canonical_ws(None, rendered)
+        .into_iter()
+        .map(|t| t.text)
+        .collect()
+}
+
+fn render_pure_c_tokens(mut sig: Vec<RawToken>) -> Vec<RawToken> {
+    for _ in 0..4 {
+        let before = sig.clone();
+        let mut out = Vec::with_capacity(sig.len());
+        let mut i = 0usize;
+
+        while i < sig.len() {
+            let head = &sig[i];
+
+            // 1. `BF_SET(base, <bit>b, <bw>w, <val...>)`
+            if head.kind == RawTokenKind::Identifier
+                && head.text == "BF_SET"
+                && sig.get(i + 1).map(|t| t.text.as_str()) == Some("(")
+            {
+                if let Some(close) = find_matching_delim(&sig, i + 1, "(", ")") {
+                    if i + 9 <= close
+                        && sig[i + 2].kind == RawTokenKind::Identifier
+                        && sig[i + 3].text == ","
+                        && sig[i + 5].text == ","
+                        && sig[i + 7].text == ","
+                    {
+                        if let (Some(bit_off), Some(bw)) = (
+                            parse_unit_val(&sig[i + 4].text, 'b'),
+                            parse_unit_val(&sig[i + 6].text, 'w'),
+                        ) {
+                            let val_str = tokens_to_pure_c_string(sig[i + 8..close].to_vec());
+                            let c_expr = format_bf_set_c(
+                                &sig[i + 2].text,
+                                bit_off,
+                                bw as usize,
+                                &val_str,
+                            );
+                            out.extend(lex_no_ws(&c_expr));
+                            i = close + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // 2. `BF(base, <bit>b, <bw>w)`
+            if head.kind == RawTokenKind::Identifier
+                && head.text == "BF"
+                && sig.get(i + 1).map(|t| t.text.as_str()) == Some("(")
+            {
+                if let Some(close) = find_matching_delim(&sig, i + 1, "(", ")") {
+                    if close == i + 7
+                        && sig[i + 2].kind == RawTokenKind::Identifier
+                        && sig[i + 3].text == ","
+                        && sig[i + 5].text == ","
+                    {
+                        if let (Some(bit_off), Some(bw)) = (
+                            parse_unit_val(&sig[i + 4].text, 'b'),
+                            parse_unit_val(&sig[i + 6].text, 'w'),
+                        ) {
+                            let c_expr = format_bf_read_c(&sig[i + 2].text, bit_off, bw as usize);
+                            out.extend(lex_no_ws(&c_expr));
+                            i = close + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // 3. `MEM_<W>B(...)`
+            if head.kind == RawTokenKind::Identifier {
+                if let Some(w_str) = head.text.strip_prefix("MEM_").and_then(|s| s.strip_suffix('B'))
+                {
+                    if let Ok(width) = w_str.parse::<usize>() {
+                        if sig.get(i + 1).map(|t| t.text.as_str()) == Some("(") {
+                            if let Some(close) = find_matching_delim(&sig, i + 1, "(", ")") {
+                                let inner = &sig[i + 2..close];
+                                if inner.len() == 3
+                                    && inner[0].kind == RawTokenKind::Identifier
+                                    && matches!(inner[1].text.as_str(), "+" | "-")
+                                {
+                                    if let Some(abs_off) = parse_unit_val(&inner[2].text, 'B') {
+                                        let signed_off = if inner[1].text == "-" {
+                                            -abs_off
+                                        } else {
+                                            abs_off
+                                        };
+                                        let c_expr =
+                                            format_mem_c(width, &inner[0].text, signed_off);
+                                        out.extend(lex_no_ws(&c_expr));
+                                        i = close + 1;
+                                        continue;
+                                    }
+                                }
+
+                                let c_expr = if inner.len() >= 3
+                                    && inner[0].kind == RawTokenKind::Identifier
+                                    && inner[1].text == "+"
+                                {
+                                    let rest_toks = &inner[2..];
+                                    let has_byte_unit = rest_toks
+                                        .iter()
+                                        .any(|t| parse_unit_val(&t.text, 'B').is_some());
+                                    if width == 1 {
+                                        let rest_s = tokens_to_pure_c_string(rest_toks.to_vec());
+                                        format!("*((_BYTE *){} + {rest_s})", inner[0].text)
+                                    } else if has_byte_unit {
+                                        let rest_s = tokens_to_pure_c_string(rest_toks.to_vec());
+                                        format!(
+                                            "*({} *)((char *){} + {rest_s})",
+                                            width_to_ida_type(width),
+                                            inner[0].text
+                                        )
+                                    } else {
+                                        let full_s = tokens_to_pure_c_string(inner.to_vec());
+                                        format!("*({} *)({full_s})", width_to_ida_type(width))
+                                    }
+                                } else {
+                                    let full_s = tokens_to_pure_c_string(inner.to_vec());
+                                    format!("*({} *)({full_s})", width_to_ida_type(width))
+                                };
+                                out.extend(lex_no_ws(&c_expr));
+                                i = close + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. `$PTR` / `$PTR2`
+            if head.kind == RawTokenKind::Identifier && head.text == "$PTR" {
+                out.push(make_ident("char"));
+                out.push(make_op("*"));
+                i += 1;
+                continue;
+            }
+            if head.kind == RawTokenKind::Identifier && head.text == "$PTR2" {
+                out.push(make_ident("char"));
+                out.push(make_op("*"));
+                out.push(make_op("*"));
+                i += 1;
+                continue;
+            }
+
+            // 5. Strip decimal `'B'` byte-unit suffix (never touches hex like `0xB`).
+            if head.kind == RawTokenKind::Number {
+                if let Some(val) = parse_unit_val(&head.text, 'B') {
+                    out.push(make_num(&val.to_string()));
+                    i += 1;
+                    continue;
+                }
+            }
+
+            out.push(head.clone());
+            i += 1;
+        }
+
+        sig = out;
+        if sig == before {
+            break;
+        }
+    }
+    sig
+}
+
+/// Render an internal normalized line (`canonical_key` or `canonical_display`) into pure,
+/// standard IDA Hex-Rays C with zero custom DSL tokens, preserving leading indentation.
+pub fn render_pure_c_text(text: &str) -> String {
+    let leading_len = text.len() - text.trim_start().len();
+    let leading = &text[..leading_len];
+    let body = &text[leading_len..];
+    if body.is_empty() {
+        return text.to_string();
+    }
+
+    let mut in_bc = false;
+    let raw = crate::parser::lex_line(body, &mut in_bc);
+    if raw.iter().any(|t| t.kind == RawTokenKind::Comment) {
+        return text.to_string();
+    }
+
+    let sig: Vec<RawToken> = raw
+        .into_iter()
+        .filter(|t| t.kind != RawTokenKind::Whitespace)
+        .collect();
+    if sig.is_empty() {
+        return text.to_string();
+    }
+
+    let rendered = render_pure_c_tokens(sig);
+    let leading_tok = if leading.is_empty() {
+        None
+    } else {
+        Some(RawToken {
+            kind: RawTokenKind::Whitespace,
+            text: leading.to_string(),
+        })
+    };
+    format_with_canonical_ws(leading_tok, rendered)
+        .into_iter()
+        .map(|t| t.text)
+        .collect()
 }

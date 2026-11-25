@@ -595,6 +595,7 @@ fn test_pointer_stride_and_offset_minimum_unit_normalization() {
 }"#;
 
     let res_on = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_no_internal_dsl_symbols(&res_on);
     assert_eq!(res_on.summary.semantic_modified_rows, 0);
     assert_eq!(res_on.summary.semantic_added_rows, 0);
     assert_eq!(res_on.summary.semantic_removed_rows, 0);
@@ -609,6 +610,20 @@ fn test_pointer_stride_and_offset_minimum_unit_normalization() {
         sem_off >= 6,
         "expected >= 6 semantic rows when ptr unit norm is disabled, got {sem_off}"
     );
+}
+
+fn assert_no_internal_dsl_symbols(res: &patch_viewer_core::DiffResult) {
+    for row in &res.rows {
+        for side in [&row.old_line, &row.new_line].into_iter().flatten() {
+            for pat in ["BF(", "BF_SET(", "MEM_", "$PTR", "$FLD_"] {
+                assert!(
+                    !side.normalized_text.contains(pat),
+                    "unexpected internal DSL token `{pat}` leaked in normalized_text: {}",
+                    side.normalized_text
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -635,6 +650,7 @@ fn test_bitfield_and_int_base_offset_minimum_unit_normalization() {
 }"#;
 
     let res = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_no_internal_dsl_symbols(&res);
     for needle in ["a1[6]", ">> 2", "0xFE03"] {
         let row = res
             .rows
@@ -680,6 +696,7 @@ fn test_pointer_unit_normalization_preserves_genuine_offset_and_scalar_diffs() {
 }"#;
 
     let res = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_no_internal_dsl_symbols(&res);
     let sem_total = res.summary.semantic_modified_rows
         + res.summary.semantic_added_rows
         + res.summary.semantic_removed_rows;
@@ -809,6 +826,7 @@ fn test_frequency_anchor_prevents_reordered_init_variable_hijack() {
 }"#;
 
     let res = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_no_internal_dsl_symbols(&res);
     for needle in ["(char)*v15", "++v15", "a3 = v195"] {
         let row = res
             .rows
@@ -840,10 +858,107 @@ fn test_frequency_anchor_prevents_reordered_init_variable_hijack() {
         .unwrap();
     let norm = &deref_row.new_line.as_ref().unwrap().normalized_text;
     assert!(
-        norm.contains("MEM_1B("),
-        "expected (char)*v15 to normalize deref as MEM_1B(...), got: {norm}"
+        norm.contains("*(_BYTE *)"),
+        "expected (char)*v15 to normalize deref as pure C *(_BYTE *), got: {norm}"
     );
 }
+
+#[test]
+fn test_strict_equivalence_preserves_struct_offset_shifts_and_renders_hex_bitfield_writes() {
+    // 1. Repeated physical offset/bitfield shifts MUST remain `Modified` (never silently merged),
+    // while strictly equivalent representations normalize to `NoiseOnly` in pure Hex-Rays C.
+    let old = r#"__int64 __fastcall sub_401000(unsigned __int16 *a1)
+{
+  int v5; // r8d
+  int v6; // r13d
+  int v7; // edx
+  int v8; // ecx
+
+  v5 = *((unsigned __int8 *)a1 + 23);
+  v6 = *((_DWORD *)a1 + 1);
+  v7 = (*(_DWORD *)a1 >> 10) & 0x7F;
+  v8 = (*(_DWORD *)a1 >> 10) & 0x7F;
+  *((_BYTE *)a1 + 23) = *((_BYTE *)a1 + 23) & 0x80 | 0xB;
+  return v5 + v6 + v7 + v8;
+}"#;
+    let new = r#"__int64 __fastcall sub_402000(unsigned int *a1)
+{
+  int v5; // r8d
+  int v6; // r13d
+  int v7; // edx
+  int v8; // ecx
+
+  v5 = *((unsigned __int8 *)a1 + 31);
+  v6 = a1[2];
+  v7 = (*(_WORD *)a1 >> 2) & 0x7F;
+  v8 = (*(_WORD *)((char *)a1 + 1) >> 2) & 0x7F;
+  *((_BYTE *)a1 + 23) = (*((_BYTE *)a1 + 23) & 0x80) | 0xB;
+  return v5 + v6 + v7 + v8;
+}"#;
+
+    let res = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_no_internal_dsl_symbols(&res);
+
+    // Physical shifts: (+23 vs +31), (+4 vs +8 via a1[2]), (bit 10 vs bit 2) -> all Modified
+    assert_eq!(res.summary.semantic_modified_rows, 3);
+    assert_eq!(res.summary.semantic_added_rows, 0);
+    assert_eq!(res.summary.semantic_removed_rows, 0);
+
+    for needle in ["+ 31", "a1[2]", "(*(_WORD *)a1 >> 2)"] {
+        let row = res
+            .rows
+            .iter()
+            .find(|r| {
+                r.new_line
+                    .as_ref()
+                    .map(|l| l.raw_text.contains(needle))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("missing modified row containing {needle}"));
+        assert_eq!(
+            row.kind,
+            ChangeKind::Modified,
+            "expected physical offset/bitfield shift `{needle}` to remain Modified"
+        );
+    }
+
+    // Strictly equivalent bitfield read: (*(_DWORD *)a1 >> 10) & 0x7F == (*(_WORD *)((char *)a1 + 1) >> 2) & 0x7F
+    let eq_bf_row = res
+        .rows
+        .iter()
+        .find(|r| {
+            r.new_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("(char *)a1 + 1"))
+                .unwrap_or(false)
+        })
+        .expect("missing equivalent bitfield row");
+    assert_eq!(eq_bf_row.kind, ChangeKind::NoiseOnly);
+    let bf_old_norm = &eq_bf_row.old_line.as_ref().unwrap().normalized_text;
+    assert!(
+        bf_old_norm.contains("((*(_WORD *) ((char *) $ARG_1 + 1) >> 2) & 0x7F)"),
+        "expected pure C minimum-width bitfield read, got: {bf_old_norm}"
+    );
+
+    // Hex literal RMW (`0xB`) must parse cleanly and render in pure Hex-Rays C without DSL leakage
+    let hex_bf_set_row = res
+        .rows
+        .iter()
+        .find(|r| {
+            r.new_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("0xB"))
+                .unwrap_or(false)
+        })
+        .expect("missing 0xB bitfield write row");
+    assert_eq!(hex_bf_set_row.kind, ChangeKind::NoiseOnly);
+    let hex_norm = &hex_bf_set_row.new_line.as_ref().unwrap().normalized_text;
+    assert!(
+        hex_norm.contains("*((_BYTE *)") && hex_norm.contains("& 0x80) | 0xB"),
+        "expected hex literal 0xB RMW to render as canonical pure C bitfield write: {hex_norm}"
+    );
+}
+
 
 
 

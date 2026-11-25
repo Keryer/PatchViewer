@@ -261,7 +261,7 @@ export default function App() {
             [
               ["normalize_addresses", "地址符号归一化 (sub_/loc_)"],
               ["normalize_variables", "局部变量重编号 (v1..vN)"],
-              ["normalize_pointer_units", "指针/位域最小单位 (1B/1bit)"],
+              ["normalize_pointer_units", "指针/位域最小宽度对齐"],
               ["ignore_comments", "忽略栈帧/注释"],
               ["align_control_flow", "控制流重排对齐 (4类)"],
               ["collapse_declarations", "声明区重排对齐"],
