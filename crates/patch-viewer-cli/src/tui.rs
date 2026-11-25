@@ -212,6 +212,10 @@ fn tui_loop(
                     state.options.placeholder_padding = !state.options.placeholder_padding;
                     state.recompute();
                 }
+                KeyCode::Char('8') => {
+                    state.options.normalize_pointer_units = !state.options.normalize_pointer_units;
+                    state.recompute();
+                }
                 _ => {}
             }
         }
@@ -534,6 +538,7 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, state: &TuiState) {
         toggle_span("5", "声明区", o.collapse_declarations),
         toggle_span("6", "强转", o.simplify_ida_casts),
         toggle_span("7", "占位填充", o.placeholder_padding),
+        toggle_span("8", "指针单位", o.normalize_pointer_units),
         toggle_span("h", "隐藏噪音", o.hide_noise_lines),
     ]);
     let line2 = Line::from(vec![

@@ -5,6 +5,7 @@ use regex::Regex;
 
 use crate::config::DiffOptions;
 use crate::parser::{LineRole, ParsedLine, RawToken, RawTokenKind};
+use crate::type_norm::{normalize_line_pointer_units, VarTypeTable};
 
 static RE_SUB: Lazy<Regex> = Lazy::new(|| Regex::new(r"^sub_[0-9A-Fa-f]+$").unwrap());
 static RE_LOC: Lazy<Regex> =
@@ -16,7 +17,7 @@ static RE_AUTO_VAR: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(?:v\d+(?:_\d+)?|result|[ijk])$").unwrap());
 static RE_AUTO_ARG: Lazy<Regex> = Lazy::new(|| Regex::new(r"^a\d+$").unwrap());
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum IdentClass {
     Sub,
     Loc,
@@ -282,9 +283,24 @@ fn is_member_access(toks: &[RawToken], idx: usize) -> bool {
     false
 }
 
+fn prepare_tokens(line: &ParsedLine, types: &VarTypeTable, options: &DiffOptions) -> Vec<RawToken> {
+    let ptr_toks = normalize_line_pointer_units(line, &line.tokens, types, options);
+    preprocess_tokens_for_casts(&ptr_toks, options)
+}
+
 /// Produce the generic normalized line key (`$VAR`, `$SUB`, ...) used before paired binding.
 pub fn compute_generic_key(line: &ParsedLine, options: &DiffOptions) -> String {
-    let toks = preprocess_tokens_for_casts(&line.tokens, options);
+    compute_generic_key_with_types(line, &VarTypeTable::default(), options)
+}
+
+/// Produce the generic normalized line key (`$VAR`, `$SUB`, ...), including pointer/bitfield
+/// minimum-unit normalization using `types`.
+pub fn compute_generic_key_with_types(
+    line: &ParsedLine,
+    types: &VarTypeTable,
+    options: &DiffOptions,
+) -> String {
+    let toks = prepare_tokens(line, types, options);
     let mut out = String::new();
     let mut prev_ws = true;
     for (idx, t) in toks.iter().enumerate() {
@@ -320,7 +336,16 @@ pub fn compute_generic_key(line: &ParsedLine, options: &DiffOptions) -> String {
 
 /// Extract ordered `(IdentClass, raw_identifier)` occurrences from a parsed line.
 pub fn line_normalizable_idents(line: &ParsedLine, options: &DiffOptions) -> Vec<(IdentClass, String)> {
-    let toks = preprocess_tokens_for_casts(&line.tokens, options);
+    line_normalizable_idents_with_types(line, &VarTypeTable::default(), options)
+}
+
+/// Extract ordered `(IdentClass, raw_identifier)` occurrences using `types` for pointer normalization.
+pub fn line_normalizable_idents_with_types(
+    line: &ParsedLine,
+    types: &VarTypeTable,
+    options: &DiffOptions,
+) -> Vec<(IdentClass, String)> {
+    let toks = prepare_tokens(line, types, options);
     let mut res = Vec::new();
     for (idx, t) in toks.iter().enumerate() {
         if t.kind == RawTokenKind::Identifier {
@@ -343,8 +368,19 @@ pub fn render_canonical_line(
     maps: &mut CanonicalMaps,
     options: &DiffOptions,
 ) -> NormalizedLine {
-    let generic_key = compute_generic_key(line, options);
-    let toks = preprocess_tokens_for_casts(&line.tokens, options);
+    render_canonical_line_with_types(line, is_old, &VarTypeTable::default(), maps, options)
+}
+
+/// Build a canonical `NormalizedLine` using `types` and the provided `CanonicalMaps`.
+pub fn render_canonical_line_with_types(
+    line: &ParsedLine,
+    is_old: bool,
+    types: &VarTypeTable,
+    maps: &mut CanonicalMaps,
+    options: &DiffOptions,
+) -> NormalizedLine {
+    let generic_key = compute_generic_key_with_types(line, types, options);
+    let toks = prepare_tokens(line, types, options);
 
     let mut key_out = String::new();
     let mut disp_out = String::new();

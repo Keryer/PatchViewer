@@ -4,6 +4,7 @@ pub mod differ;
 pub mod model;
 pub mod normalizer;
 pub mod parser;
+pub mod type_norm;
 
 pub use config::DiffOptions;
 pub use differ::diff_pseudocode;

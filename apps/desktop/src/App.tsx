@@ -6,6 +6,7 @@ export interface DiffOptions {
   normalize_addresses: boolean;
   sequential_address_numbering: boolean;
   normalize_variables: boolean;
+  normalize_pointer_units: boolean;
   collapse_declarations: boolean;
   simplify_ida_casts: boolean;
   align_control_flow: boolean;
@@ -66,6 +67,7 @@ const DEFAULT_OPTIONS: DiffOptions = {
   normalize_addresses: true,
   sequential_address_numbering: true,
   normalize_variables: true,
+  normalize_pointer_units: true,
   collapse_declarations: true,
   simplify_ida_casts: false,
   align_control_flow: true,
@@ -259,6 +261,7 @@ export default function App() {
             [
               ["normalize_addresses", "地址符号归一化 (sub_/loc_)"],
               ["normalize_variables", "局部变量重编号 (v1..vN)"],
+              ["normalize_pointer_units", "指针/位域最小单位 (1B/1bit)"],
               ["ignore_comments", "忽略栈帧/注释"],
               ["align_control_flow", "控制流重排对齐 (4类)"],
               ["collapse_declarations", "声明区重排对齐"],

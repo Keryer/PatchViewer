@@ -4,8 +4,9 @@ use similar::{capture_diff_slices, Algorithm, DiffOp};
 
 use crate::config::DiffOptions;
 use crate::model::CfgReorderTag;
-use crate::normalizer::{compute_generic_key, conditions_are_inverted};
+use crate::normalizer::{compute_generic_key_with_types, conditions_are_inverted};
 use crate::parser::{CaseNode, LineRole, ParsedLine, StmtNode};
+use crate::type_norm::VarTypeTable;
 
 /// A contiguous structural segment produced by CFG alignment.
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub struct AlignedSegment {
 pub struct AlignContext<'a> {
     pub old_lines: &'a [ParsedLine],
     pub new_lines: &'a [ParsedLine],
+    pub old_types: &'a VarTypeTable,
+    pub new_types: &'a VarTypeTable,
     pub old_generic: Vec<String>,
     pub new_generic: Vec<String>,
     pub options: &'a DiffOptions,
@@ -33,19 +36,23 @@ impl<'a> AlignContext<'a> {
     pub fn new(
         old_lines: &'a [ParsedLine],
         new_lines: &'a [ParsedLine],
+        old_types: &'a VarTypeTable,
+        new_types: &'a VarTypeTable,
         options: &'a DiffOptions,
     ) -> Self {
         let old_generic = old_lines
             .iter()
-            .map(|l| compute_generic_key(l, options))
+            .map(|l| compute_generic_key_with_types(l, old_types, options))
             .collect();
         let new_generic = new_lines
             .iter()
-            .map(|l| compute_generic_key(l, options))
+            .map(|l| compute_generic_key_with_types(l, new_types, options))
             .collect();
         Self {
             old_lines,
             new_lines,
+            old_types,
+            new_types,
             old_generic,
             new_generic,
             options,
@@ -189,7 +196,7 @@ impl<'a> AlignContext<'a> {
         Self::jaccard(&a, &b)
     }
 
-    fn generic_str(&self, raw_expr: &str) -> String {
+    fn generic_str(&self, raw_expr: &str, is_old: bool) -> String {
         let mut in_bc = false;
         let toks = crate::parser::lex_line(raw_expr, &mut in_bc);
         let dummy = ParsedLine {
@@ -199,7 +206,12 @@ impl<'a> AlignContext<'a> {
             tokens: toks,
             role: LineRole::Code,
         };
-        compute_generic_key(&dummy, self.options)
+        let types = if is_old {
+            self.old_types
+        } else {
+            self.new_types
+        };
+        compute_generic_key_with_types(&dummy, types, self.options)
     }
 
     fn node_structural_key(&self, node: &StmtNode, is_old: bool) -> String {
@@ -227,13 +239,13 @@ impl<'a> AlignContext<'a> {
                 });
                 format!(
                     "IF:{}|ELSE:{}|N:{}",
-                    self.generic_str(cond_raw),
+                    self.generic_str(cond_raw, is_old),
                     !else_body.is_empty(),
                     has_nested_ctrl
                 )
             }
             StmtNode::Switch { expr_raw, .. } => {
-                format!("SWITCH:{}", self.generic_str(expr_raw))
+                format!("SWITCH:{}", self.generic_str(expr_raw, is_old))
             }
             StmtNode::LabelBlock { body, .. } => {
                 let mut parts = Vec::new();
@@ -732,7 +744,7 @@ impl<'a> AlignContext<'a> {
             }
             StmtNode::Block { .. } => "__BLOCK__".to_string(),
             StmtNode::Switch { expr_raw, .. } => {
-                format!("__SWITCH__:{}", self.generic_str(expr_raw))
+                format!("__SWITCH__:{}", self.generic_str(expr_raw, is_old))
             }
             _ => self.node_structural_key(node, is_old),
         }
@@ -896,9 +908,9 @@ impl<'a> AlignContext<'a> {
                                 };
                             let inv = self.body_similarity(ot, ne) + self.body_similarity(oe, nt);
                             let cond_bonus = if conditions_are_inverted(
-                                &self.generic_str(oc),
-                                &self.generic_str(nc),
-                            ) || self.generic_str(oc) == self.generic_str(nc)
+                                &self.generic_str(oc, true),
+                                &self.generic_str(nc, false),
+                            ) || self.generic_str(oc, true) == self.generic_str(nc, false)
                             {
                                 0.35
                             } else {
@@ -1442,8 +1454,8 @@ impl<'a> AlignContext<'a> {
                 }) = new_slice.first()
                 {
                     let cond_inv = conditions_are_inverted(
-                        &self.generic_str(g_cond),
-                        &self.generic_str(n_cond),
+                        &self.generic_str(g_cond, true),
+                        &self.generic_str(n_cond, false),
                     );
                     let rest_old_owned: Vec<StmtNode> =
                         old_slice[1..].iter().map(|s| (*s).clone()).collect();
@@ -1573,8 +1585,8 @@ impl<'a> AlignContext<'a> {
                 }) = old_slice.first()
                 {
                     let cond_inv = conditions_are_inverted(
-                        &self.generic_str(o_cond),
-                        &self.generic_str(g_cond),
+                        &self.generic_str(o_cond, true),
+                        &self.generic_str(g_cond, false),
                     );
                     let rest_new_owned: Vec<StmtNode> =
                         new_slice[1..].iter().map(|s| (*s).clone()).collect();
@@ -1838,8 +1850,8 @@ impl<'a> AlignContext<'a> {
             ) => {
                 let has_both_else = !oeb.is_empty() && !neb.is_empty();
                 let cond_inv = conditions_are_inverted(
-                    &self.generic_str(oc),
-                    &self.generic_str(nc),
+                    &self.generic_str(oc, true),
+                    &self.generic_str(nc, false),
                 );
                 let direct_sim =
                     self.body_similarity(otb, ntb) + self.body_similarity(oeb, neb);

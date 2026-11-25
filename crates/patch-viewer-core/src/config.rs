@@ -16,6 +16,9 @@ pub struct DiffOptions {
     /// Normalize IDA auto-named local variables (`v1..vN`, `result`) and parameters (`a1..aN`)
     /// by first-use order in executable statements (`$VAR_1`, `$ARG_1`).
     pub normalize_variables: bool,
+    /// Normalize pointer arithmetic, dereferences, and bitfields down to minimum addressing units
+    /// (`1B` byte offsets/strides and `1bit` bitfields) plus canonical `$PTR` pointer types.
+    pub normalize_pointer_units: bool,
     /// Group and align top-of-function local variable declarations (`int v3; // eax`)
     /// so register reallocation or stack-frame shifts do not pollute the diff.
     pub collapse_declarations: bool,
@@ -38,6 +41,7 @@ impl Default for DiffOptions {
             normalize_addresses: true,
             sequential_address_numbering: true,
             normalize_variables: true,
+            normalize_pointer_units: true,
             collapse_declarations: true,
             simplify_ida_casts: false,
             align_control_flow: true,

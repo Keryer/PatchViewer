@@ -255,6 +255,7 @@ fn test_cve_example_pair_isolates_security_patch() {
             normalize_addresses: false,
             sequential_address_numbering: false,
             normalize_variables: false,
+            normalize_pointer_units: false,
             collapse_declarations: false,
             simplify_ida_casts: false,
             align_control_flow: false,
@@ -553,6 +554,298 @@ fn test_placeholder_padding_for_wrapped_loop() {
         ]
     );
 }
+
+#[test]
+fn test_pointer_stride_and_offset_minimum_unit_normalization() {
+    let old = r#"void __fastcall sub_401000(__int64 a1, char *a2)
+{
+  char *v8; // rsi
+  unsigned __int8 *v12; // rbx
+  char *v26; // rdx
+  int v11; // eax
+  unsigned __int16 v18; // cx
+
+  v8 = a2;
+  v12 = (unsigned __int8 *)a2;
+  v8 += 8;
+  v26 = &v8[v11];
+  v18 = *(unsigned __int16 *)v26;
+  v12 = (unsigned __int8 *)(v26 + 2);
+  v8 = v26 + 3;
+  ++v8;
+  sub_401100(v8, v12, v18);
+}"#;
+    let new = r#"void __fastcall sub_402000(__int64 a1, _QWORD *a2)
+{
+  _QWORD *v9; // r9
+  unsigned __int8 *v4; // rbx
+  unsigned __int16 *v25; // rdx
+  int v12; // eax
+  unsigned __int16 v19; // cx
+
+  v9 = a2;
+  v4 = (unsigned __int8 *)a2;
+  ++v9;
+  v25 = (unsigned __int16 *)((char *)v9 + v12);
+  v19 = *v25;
+  v4 = (unsigned __int8 *)(v25 + 1);
+  v9 = (_QWORD *)((char *)v25 + 3);
+  v9 = (_QWORD *)((char *)v9 + 1);
+  sub_402100(v9, v4, v19);
+}"#;
+
+    let res_on = diff_pseudocode(old, new, &DiffOptions::default());
+    assert_eq!(res_on.summary.semantic_modified_rows, 0);
+    assert_eq!(res_on.summary.semantic_added_rows, 0);
+    assert_eq!(res_on.summary.semantic_removed_rows, 0);
+
+    let mut opts_off = DiffOptions::default();
+    opts_off.normalize_pointer_units = false;
+    let res_off = diff_pseudocode(old, new, &opts_off);
+    let sem_off = res_off.summary.semantic_modified_rows
+        + res_off.summary.semantic_added_rows
+        + res_off.summary.semantic_removed_rows;
+    assert!(
+        sem_off >= 6,
+        "expected >= 6 semantic rows when ptr unit norm is disabled, got {sem_off}"
+    );
+}
+
+#[test]
+fn test_bitfield_and_int_base_offset_minimum_unit_normalization() {
+    let old = r#"__int64 __fastcall sub_401000(__int64 a1, char *v8)
+{
+  int v6; // eax
+  int v7; // edx
+
+  v6 = *(_DWORD *)(a1 + 24);
+  v7 = (*(_DWORD *)v8 >> 10) & 0x7F;
+  *(_DWORD *)v8 = *(_DWORD *)v8 & 0xFFFE03FF | ((v7 & 0x7F) << 10);
+  return v6;
+}"#;
+    let new = r#"__int64 __fastcall sub_402000(_DWORD *a1, unsigned __int16 *v8)
+{
+  int v6; // eax
+  int v9; // ecx
+
+  v6 = a1[6];
+  v9 = (*(_WORD *)((char *)v8 + 1) >> 2) & 0x7F;
+  *(_WORD *)((char *)v8 + 1) = (4 * (v9 & 0x7F)) | *(_WORD *)((char *)v8 + 1) & 0xFE03;
+  return v6;
+}"#;
+
+    let res = diff_pseudocode(old, new, &DiffOptions::default());
+    for needle in ["a1[6]", ">> 2", "0xFE03"] {
+        let row = res
+            .rows
+            .iter()
+            .find(|r| {
+                r.new_line
+                    .as_ref()
+                    .map(|l| l.raw_text.contains(needle))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("missing row containing {needle}"));
+        assert_eq!(
+            row.kind,
+            ChangeKind::NoiseOnly,
+            "expected NoiseOnly for {needle}, old={:?}, new={:?}",
+            row.old_line.as_ref().map(|l| &l.normalized_text),
+            row.new_line.as_ref().map(|l| &l.normalized_text)
+        );
+    }
+}
+
+#[test]
+fn test_pointer_unit_normalization_preserves_genuine_offset_and_scalar_diffs() {
+    let old = r#"int __fastcall sub_401000(char *v8, int v5)
+{
+  int v1; // eax
+  int v2; // ecx
+
+  v1 = *(_WORD *)((char *)v8 + 2);
+  v2 = (*(_DWORD *)v8 >> 10) & 0x7F;
+  ++v5;
+  return v1 + v2 + v5;
+}"#;
+    let new = r#"int __fastcall sub_402000(char *v8, int v5)
+{
+  int v1; // eax
+  int v2; // ecx
+
+  v1 = *(_WORD *)((char *)v8 + 4);
+  v2 = (*(_WORD *)v8 >> 2) & 0x7F;
+  v5 += 4;
+  return v1 + v2 + v5;
+}"#;
+
+    let res = diff_pseudocode(old, new, &DiffOptions::default());
+    let sem_total = res.summary.semantic_modified_rows
+        + res.summary.semantic_added_rows
+        + res.summary.semantic_removed_rows;
+    assert!(
+        sem_total >= 3,
+        "expected >= 3 semantic rows, got {sem_total}"
+    );
+    for needle in ["+ 4)", ">> 2"] {
+        let row = res
+            .rows
+            .iter()
+            .find(|r| {
+                r.new_line
+                    .as_ref()
+                    .map(|l| l.raw_text.contains(needle))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("missing row containing {needle}"));
+        assert_eq!(
+            row.kind,
+            ChangeKind::Modified,
+            "expected Modified for genuine diff {needle}, got {:?}",
+            row.kind
+        );
+    }
+    let inc_old = res
+        .rows
+        .iter()
+        .find(|r| {
+            r.old_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("++v5"))
+                .unwrap_or(false)
+        })
+        .expect("missing ++v5 row");
+    assert!(matches!(
+        inc_old.kind,
+        ChangeKind::Removed | ChangeKind::Modified
+    ));
+    assert!(
+        !inc_old
+            .old_line
+            .as_ref()
+            .unwrap()
+            .normalized_text
+            .contains('B'),
+        "scalar ++v5 must not be scaled to bytes: {}",
+        inc_old.old_line.as_ref().unwrap().normalized_text
+    );
+    let inc_new = res
+        .rows
+        .iter()
+        .find(|r| {
+            r.new_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("v5 += 4"))
+                .unwrap_or(false)
+        })
+        .expect("missing v5 += 4 row");
+    assert!(matches!(
+        inc_new.kind,
+        ChangeKind::Added | ChangeKind::Modified
+    ));
+    assert!(
+        !inc_new
+            .new_line
+            .as_ref()
+            .unwrap()
+            .normalized_text
+            .contains('B'),
+        "scalar v5 += 4 must not be scaled to bytes: {}",
+        inc_new.new_line.as_ref().unwrap().normalized_text
+    );
+}
+
+#[test]
+fn test_frequency_anchor_prevents_reordered_init_variable_hijack() {
+    let old = r#"int __fastcall sub_401000(char *a3, int a4)
+{
+  unsigned __int8 *v13; // r12
+  unsigned __int8 *v14; // r15
+  char *v190; // rbx
+  unsigned __int8 *v20; // rdx
+  unsigned int v18; // eax
+
+  v13 = (unsigned __int8 *)&a3[a4];
+  v14 = (unsigned __int8 *)a3;
+  v190 = a3;
+  while ( v14 < v13 )
+  {
+    v18 = (unsigned int)(char)*v14;
+    if ( v18 == 13 )
+    {
+      ++v14;
+      a3 = v190;
+    }
+    ++v14;
+    v20 = v14;
+    sub_401100(v20, v18);
+  }
+  return 0;
+}"#;
+    let new = r#"int __fastcall sub_402000(char *a3, int a4)
+{
+  char *v195; // rbx
+  unsigned __int8 *v13; // r12
+  unsigned __int8 *v15; // r13
+  unsigned __int8 *v20; // rdx
+  unsigned int v18; // eax
+
+  v195 = a3;
+  v13 = (unsigned __int8 *)&a3[a4];
+  v15 = (unsigned __int8 *)a3;
+  while ( v15 < v13 )
+  {
+    v18 = (unsigned int)(char)*v15;
+    if ( v18 == 13 )
+    {
+      ++v15;
+      a3 = v195;
+    }
+    ++v15;
+    v20 = v15;
+    sub_402100(v20, v18);
+  }
+  return 0;
+}"#;
+
+    let res = diff_pseudocode(old, new, &DiffOptions::default());
+    for needle in ["(char)*v15", "++v15", "a3 = v195"] {
+        let row = res
+            .rows
+            .iter()
+            .find(|r| {
+                r.new_line
+                    .as_ref()
+                    .map(|l| l.raw_text.contains(needle))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("missing row containing {needle}"));
+        assert_eq!(
+            row.kind,
+            ChangeKind::NoiseOnly,
+            "expected NoiseOnly for {needle}, old={:?}, new={:?}",
+            row.old_line.as_ref().map(|l| &l.normalized_text),
+            row.new_line.as_ref().map(|l| &l.normalized_text)
+        );
+    }
+    let deref_row = res
+        .rows
+        .iter()
+        .find(|r| {
+            r.new_line
+                .as_ref()
+                .map(|l| l.raw_text.contains("(char)*v15"))
+                .unwrap_or(false)
+        })
+        .unwrap();
+    let norm = &deref_row.new_line.as_ref().unwrap().normalized_text;
+    assert!(
+        norm.contains("MEM_1B("),
+        "expected (char)*v15 to normalize deref as MEM_1B(...), got: {norm}"
+    );
+}
+
+
 
 
 

@@ -9,34 +9,47 @@ use crate::model::{
     TokenSpan,
 };
 use crate::normalizer::{
-    classify_identifier, compute_generic_key, conditions_are_inverted, line_normalizable_idents,
-    render_canonical_line, CanonicalMaps, IdentClass, NormalizedLine,
+    classify_identifier, compute_generic_key_with_types, conditions_are_inverted,
+    line_normalizable_idents_with_types, render_canonical_line_with_types, CanonicalMaps,
+    IdentClass, NormalizedLine,
 };
 use crate::parser::{parse_ast, parse_lines, ParsedLine, RawToken, RawTokenKind};
+use crate::type_norm::VarTypeTable;
 
 /// Execute full dual-track pseudocode diffing over two IDA Pro (Hex-Rays) pseudocode inputs.
 pub fn diff_pseudocode(old_src: &str, new_src: &str, options: &DiffOptions) -> DiffResult {
     let old_lines = parse_lines(old_src);
     let new_lines = parse_lines(new_src);
 
+    let old_types = VarTypeTable::from_lines(&old_lines);
+    let new_types = VarTypeTable::from_lines(&new_lines);
+
     let old_ast = parse_ast(&old_lines);
     let new_ast = parse_ast(&new_lines);
 
-    let align_ctx = AlignContext::new(&old_lines, &new_lines, options);
+    let align_ctx = AlignContext::new(&old_lines, &new_lines, &old_types, &new_types, options);
     let segments = align_ctx.align_ast(&old_ast, &new_ast);
 
     // Pass 1: Discover canonical variable and address symbol mappings across matched anchors.
     let mut maps = CanonicalMaps::default();
-    build_canonical_anchors(&old_lines, &new_lines, &segments, &mut maps, options);
+    build_canonical_anchors(
+        &old_lines,
+        &new_lines,
+        &old_types,
+        &new_types,
+        &segments,
+        &mut maps,
+        options,
+    );
 
     // Pass 2: Render canonical normalized lines for every line in old and new.
     let old_norm: Vec<NormalizedLine> = old_lines
         .iter()
-        .map(|l| render_canonical_line(l, true, &mut maps, options))
+        .map(|l| render_canonical_line_with_types(l, true, &old_types, &mut maps, options))
         .collect();
     let new_norm: Vec<NormalizedLine> = new_lines
         .iter()
-        .map(|l| render_canonical_line(l, false, &mut maps, options))
+        .map(|l| render_canonical_line_with_types(l, false, &new_types, &mut maps, options))
         .collect();
 
     // Pass 3: Build AlignedRows from each structural segment.
@@ -72,15 +85,43 @@ pub fn diff_pseudocode(old_src: &str, new_src: &str, options: &DiffOptions) -> D
     }
 }
 
+type VoteMap = HashMap<(IdentClass, String, String), (usize, usize)>;
+
+fn record_vote(
+    votes: &mut VoteMap,
+    seq: &mut usize,
+    class: IdentClass,
+    old_sym: &str,
+    new_sym: &str,
+    weight: usize,
+) {
+    if class == IdentClass::Regular {
+        return;
+    }
+    let key = (class, old_sym.to_string(), new_sym.to_string());
+    if let Some((total_w, _)) = votes.get_mut(&key) {
+        *total_w += weight;
+    } else {
+        *seq += 1;
+        votes.insert(key, (weight, *seq));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_canonical_anchors(
     old_lines: &[ParsedLine],
     new_lines: &[ParsedLine],
+    old_types: &VarTypeTable,
+    new_types: &VarTypeTable,
     segments: &[AlignedSegment],
     maps: &mut CanonicalMaps,
     options: &DiffOptions,
 ) {
-    // Anchor non-declaration executable/header segments first so real code usage
-    // determines canonical variable & address ordering.
+    // Pass 1a: Collect weighted co-occurrence votes across all executable/header segments
+    // so a single reordered initialization line cannot hijack high-frequency variables.
+    let mut votes: VoteMap = HashMap::new();
+    let mut seq = 0usize;
+
     for seg in segments {
         if seg.is_declaration_block {
             continue;
@@ -89,12 +130,14 @@ fn build_canonical_anchors(
         {
             let oi = seg.old_indices[0];
             let ni = seg.new_indices[0];
-            let o_idents = line_normalizable_idents(&old_lines[oi], options);
-            let n_idents = line_normalizable_idents(&new_lines[ni], options);
+            let o_idents =
+                line_normalizable_idents_with_types(&old_lines[oi], old_types, options);
+            let n_idents =
+                line_normalizable_idents_with_types(&new_lines[ni], new_types, options);
             if o_idents.len() == n_idents.len() {
                 for ((oc, os), (nc, ns)) in o_idents.iter().zip(n_idents.iter()) {
                     if oc == nc {
-                        maps.bind_pair(*oc, os, ns);
+                        record_vote(&mut votes, &mut seq, *oc, os, ns, 3);
                     }
                 }
             }
@@ -104,12 +147,12 @@ fn build_canonical_anchors(
         let o_keys: Vec<String> = seg
             .old_indices
             .iter()
-            .map(|&i| compute_generic_key(&old_lines[i], options))
+            .map(|&i| compute_generic_key_with_types(&old_lines[i], old_types, options))
             .collect();
         let n_keys: Vec<String> = seg
             .new_indices
             .iter()
-            .map(|&i| compute_generic_key(&new_lines[i], options))
+            .map(|&i| compute_generic_key_with_types(&new_lines[i], new_types, options))
             .collect();
 
         let ops = capture_diff_slices(Algorithm::Myers, &o_keys, &n_keys);
@@ -123,12 +166,14 @@ fn build_canonical_anchors(
                     for k in 0..len {
                         let oi = seg.old_indices[old_index + k];
                         let ni = seg.new_indices[new_index + k];
-                        let o_idents = line_normalizable_idents(&old_lines[oi], options);
-                        let n_idents = line_normalizable_idents(&new_lines[ni], options);
+                        let o_idents =
+                            line_normalizable_idents_with_types(&old_lines[oi], old_types, options);
+                        let n_idents =
+                            line_normalizable_idents_with_types(&new_lines[ni], new_types, options);
                         if o_idents.len() == n_idents.len() {
                             for ((oc, os), (nc, ns)) in o_idents.iter().zip(n_idents.iter()) {
                                 if oc == nc {
-                                    maps.bind_pair(*oc, os, ns);
+                                    record_vote(&mut votes, &mut seq, *oc, os, ns, 3);
                                 }
                             }
                         }
@@ -140,26 +185,39 @@ fn build_canonical_anchors(
                     new_index,
                     new_len,
                 } => {
-                    // Fuzzy line pair matching inside replacement blocks to bind shared callees/vars
+                    // Fuzzy line pair matching inside replacement blocks to vote shared callees/vars
                     let pairs = pair_similar_lines(
                         &seg.old_indices[old_index..old_index + old_len],
                         &seg.new_indices[new_index..new_index + new_len],
-                        |i| compute_generic_key(&old_lines[i], options),
-                        |j| compute_generic_key(&new_lines[j], options),
+                        |i| compute_generic_key_with_types(&old_lines[i], old_types, options),
+                        |j| compute_generic_key_with_types(&new_lines[j], new_types, options),
                     );
                     for (oi_opt, ni_opt) in pairs {
                         if let (Some(oi), Some(ni)) = (oi_opt, ni_opt) {
-                            let o_idents = line_normalizable_idents(&old_lines[oi], options);
-                            let n_idents = line_normalizable_idents(&new_lines[ni], options);
+                            let o_idents = line_normalizable_idents_with_types(
+                                &old_lines[oi],
+                                old_types,
+                                options,
+                            );
+                            let n_idents = line_normalizable_idents_with_types(
+                                &new_lines[ni],
+                                new_types,
+                                options,
+                            );
                             if o_idents.len() == n_idents.len() {
                                 for ((oc, os), (nc, ns)) in o_idents.iter().zip(n_idents.iter()) {
                                     if oc == nc {
-                                        maps.bind_pair(*oc, os, ns);
+                                        record_vote(&mut votes, &mut seq, *oc, os, ns, 1);
                                     }
                                 }
                             } else {
-                                // Bind matching Sub/Dat/Loc anchors if counts match per class
-                                bind_single_class_anchors(&o_idents, &n_idents, maps);
+                                // Vote matching Sub/Dat/Loc/Arg anchors if counts match per class
+                                vote_single_class_anchors(
+                                    &o_idents,
+                                    &n_idents,
+                                    &mut votes,
+                                    &mut seq,
+                                );
                             }
                         }
                     }
@@ -168,12 +226,45 @@ fn build_canonical_anchors(
             }
         }
     }
+
+    // Pass 1b: Resolve optimal 1-to-1 winners by descending vote weight (tie-broken by first appearance),
+    // then assign canonical IDs in first-appearance order.
+    let mut ranked: Vec<(IdentClass, String, String, usize, usize)> = votes
+        .into_iter()
+        .map(|((cls, o, n), (w, first_seq))| (cls, o, n, w, first_seq))
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.3.cmp(&a.3)
+            .then_with(|| a.4.cmp(&b.4))
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+
+    let mut used_old: HashSet<(IdentClass, String)> = HashSet::new();
+    let mut used_new: HashSet<(IdentClass, String)> = HashSet::new();
+    let mut winners: Vec<(IdentClass, String, String, usize)> = Vec::new();
+
+    for (cls, o, n, _, first_seq) in ranked {
+        let ko = (cls, o.clone());
+        let kn = (cls, n.clone());
+        if !used_old.contains(&ko) && !used_new.contains(&kn) {
+            used_old.insert(ko);
+            used_new.insert(kn);
+            winners.push((cls, o, n, first_seq));
+        }
+    }
+
+    winners.sort_by_key(|w| w.3);
+    for (cls, o, n, _) in winners {
+        maps.bind_pair(cls, &o, &n);
+    }
 }
 
-fn bind_single_class_anchors(
+fn vote_single_class_anchors(
     o_idents: &[(IdentClass, String)],
     n_idents: &[(IdentClass, String)],
-    maps: &mut CanonicalMaps,
+    votes: &mut VoteMap,
+    seq: &mut usize,
 ) {
     for cls in [
         IdentClass::Sub,
@@ -193,7 +284,7 @@ fn bind_single_class_anchors(
             .collect();
         if !o_cls.is_empty() && o_cls.len() == n_cls.len() {
             for (o, n) in o_cls.iter().zip(n_cls.iter()) {
-                maps.bind_pair(cls, o, n);
+                record_vote(votes, seq, cls, o, n, 1);
             }
         }
     }

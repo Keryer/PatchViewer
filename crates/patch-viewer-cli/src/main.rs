@@ -97,6 +97,10 @@ struct Cli {
     /// 启用占位填充模式（缺失侧自动补齐 if (true) { pass; } 等结构占位以对齐代码）
     #[arg(long = "placeholder-pad", alias = "pad")]
     placeholder_pad: bool,
+
+    /// 关闭指针/位域最小单位归一化 (1B步长/偏移与1bit位域)
+    #[arg(long)]
+    no_ptr_norm: bool,
 }
 
 fn load_inputs(cli: &Cli) -> Result<(String, String, String, String)> {
@@ -135,6 +139,7 @@ fn main() -> Result<()> {
         normalize_addresses: !cli.no_addr_norm,
         sequential_address_numbering: !cli.no_seq_addr,
         normalize_variables: !cli.no_var_norm,
+        normalize_pointer_units: !cli.no_ptr_norm,
         collapse_declarations: !cli.no_decl_collapse,
         simplify_ida_casts: cli.simplify_casts,
         align_control_flow: !cli.no_cfg_align,
